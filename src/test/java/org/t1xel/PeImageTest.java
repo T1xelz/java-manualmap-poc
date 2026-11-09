@@ -22,14 +22,14 @@ class PeImageTest {
         b.putInt(0x3C, 0x80);
         b.putInt(0x80, 0x4550);
         b.putShort(0x84, (short) 0x8664);
-        b.putShort(0x86, (short) 1);
+        b.putShort(0x86, (short) 2);
         b.putShort(0x94, (short) 240);
         b.putShort(0x96, (short) 0x2000);
         b.putShort(0x98, (short) 0x20B);
         b.putInt(0x98 + 16, 0x1000);
         b.putLong(0x98 + 24, 0x180000000L);
         b.putInt(0x98 + 32, 0x1000);
-        b.putInt(0x98 + 56, 0x3000);
+        b.putInt(0x98 + 56, 0x4000);
         b.putInt(0x98 + 60, 0x200);
         b.putInt(0x98 + 108, 16);
         int section = 0x188;
@@ -40,8 +40,29 @@ class PeImageTest {
         b.putInt(section + 16, 0x200);
         b.putInt(section + 20, 0x200);
         b.putInt(section + 36, 0x60000020);
+        int data = section + 40;
+        b.position(data);
+        b.put(new byte[]{'.', 'd', 'a', 't', 'a', 0, 0, 0});
+        b.putInt(data + 8, 0x1000);
+        b.putInt(data + 12, 0x2000);
+        b.putInt(data + 16, 0);
+        b.putInt(data + 20, 0);
+        b.putInt(data + 36, 0xC0000040);
         bytes[0x200] = (byte) 0xC3;
         return bytes;
+    }
+
+    private static void setTls(ByteBuffer b) {
+        b.putInt(0x98 + 112 + 9 * 8, 0x1080);
+        b.putInt(0x98 + 116 + 9 * 8, 40);
+        b.putLong(0x280, 0x180001140L);
+        b.putLong(0x288, 0x180001150L);
+        b.putLong(0x290, 0x180002000L);
+        b.putLong(0x298, 0x180001100L);
+        b.putInt(0x2A0, 0x20);
+        b.putInt(0x2A4, 0);
+        b.putLong(0x300, 0x180001000L);
+        b.putLong(0x308, 0);
     }
 
     @Test
@@ -71,11 +92,28 @@ class PeImageTest {
         b.putInt(0x98 + 112 + 13 * 8, 0x1000);
         b.putInt(0x98 + 116 + 13 * 8, 32);
         assertThrows(IllegalArgumentException.class, () -> new PeImage(bytes).validateDll());
-        b.putInt(0x98 + 116 + 13 * 8, 0);
-        b.putInt(0x98 + 112 + 9 * 8, 0x1000);
-        b.putInt(0x98 + 116 + 9 * 8, 40);
-        b.putLong(0x200, 0x180001100L);
-        b.putLong(0x208, 0x180001108L);
+    }
+
+    @Test
+    void acceptsStaticTlsAndRejectsMalformedVariants() {
+        byte[] bytes = minimalDll();
+        ByteBuffer b = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN);
+        setTls(b);
+        new PeImage(bytes).validateDll();
+
+        b.putLong(0x290, 0);
+        assertThrows(IllegalArgumentException.class, () -> new PeImage(bytes).validateDll());
+        b.putLong(0x290, 0x180002000L);
+
+        b.putLong(0x288, 0x180001100L);
+        assertThrows(IllegalArgumentException.class, () -> new PeImage(bytes).validateDll());
+        b.putLong(0x288, 0x180001150L);
+
+        b.putLong(0x300, 0x180002000L);
+        assertThrows(IllegalArgumentException.class, () -> new PeImage(bytes).validateDll());
+        b.putLong(0x300, 0x180001000L);
+
+        b.putInt(0x2A0, Integer.MAX_VALUE);
         assertThrows(IllegalArgumentException.class, () -> new PeImage(bytes).validateDll());
     }
 

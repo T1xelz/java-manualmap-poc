@@ -22,12 +22,28 @@ public final class ShellcodeTool {
             Path output = root.resolve("build/native");
             Files.createDirectories(output);
             if (args[0].equals("build")) {
-                compile(root, output, "loader.cpp", "/GS- /GR- /EHs-c- /O1 /Oi /Gs9999999 /guard:cf- /Zl",
+                compile(root, output, "loader.cpp", "loader", ".exe",
+                        "/GS- /GR- /EHs-c- /O1 /Oi /Gs9999999 /guard:cf- /Zl",
                         "/ENTRY:ManualMapShellcode /NODEFAULTLIB /SUBSYSTEM:CONSOLE /FIXED:NO /DYNAMICBASE:NO /OPT:NOICF /OPT:NOREF /MERGE:.rdata=.text");
                 extract(output.resolve("loader.exe"), root.resolve("build/generated-shellcode/loader.bin"));
             } else {
-                compile(root, output, "fixture.cpp", "/GS- /O1 /Zl", "/DLL /ENTRY:DllMain /NODEFAULTLIB kernel32.lib");
-                compile(root, output, "host.cpp", "/GS- /O1 /Zl", "/ENTRY:HostMain /SUBSYSTEM:CONSOLE /NODEFAULTLIB kernel32.lib");
+                // Same source across every EH/CRT combination the reference
+                // test matrix covers (x64 only).
+                record Fixture(String name, String eh, String crt, String define) {
+                }
+                for (Fixture fixture : List.of(
+                        new Fixture("ehsc_md", "/EHsc", "/MD", "EH_MODE_EHSC"),
+                        new Fixture("eha_md", "/EHa", "/MD", "EH_MODE_EHA"),
+                        new Fixture("ehsc_mt", "/EHsc", "/MT", "EH_MODE_EHSC"),
+                        new Fixture("eha_mt", "/EHa", "/MT", "EH_MODE_EHA"),
+                        new Fixture("ehac_mt", "/EHac", "/MT", "EH_MODE_EHAC"))) {
+                    compile(root, output, "fixture.cpp", "fixture_" + fixture.name(), ".dll",
+                            fixture.eh() + " " + fixture.crt() + " /O2 /D" + fixture.define()
+                                    + " /DEH_MODE_LABEL=\"" + fixture.name().toUpperCase() + "\"",
+                            "/DLL");
+                }
+                compile(root, output, "host.cpp", "host", ".exe",
+                        "/GS- /O1 /Zl", "/ENTRY:HostMain /SUBSYSTEM:CONSOLE /NODEFAULTLIB kernel32.lib");
             }
         } else if (args.length == 3 && args[0].equals("extract")) {
             extract(Path.of(args[1]), Path.of(args[2]));
@@ -82,10 +98,8 @@ public final class ShellcodeTool {
         return text.append("};\n").toString();
     }
 
-    private static void compile(Path root, Path output, String source, String flags, String linkFlags)
-            throws IOException, InterruptedException {
-        String stem = source.substring(0, source.lastIndexOf('.'));
-        String extension = source.equals("fixture.cpp") ? ".dll" : ".exe";
+    private static void compile(Path root, Path output, String source, String stem, String extension,
+            String flags, String linkFlags) throws IOException, InterruptedException {
         String command = "call " + quote(findVcvars().toString()) + " >nul && cl /nologo /W4 " + flags
                 + " /Fo" + quote(output.resolve(stem + ".obj").toString())
                 + " " + quote(root.resolve("native").resolve(source).toString())

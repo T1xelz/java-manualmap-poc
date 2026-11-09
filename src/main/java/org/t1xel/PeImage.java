@@ -122,33 +122,66 @@ public final class PeImage {
             range(image.getInt(exceptions + offset + 8), 4, imageSize);
             previousEnd = end;
         }
-        if (directorySize(9) != 0) {
-            require(directorySize(9) >= 40, "Truncated TLS directory");
-            int tls = directoryRva(9);
-            require(image.getLong(tls) == image.getLong(tls + 8) && image.getInt(tls + 32) == 0,
-                    "Static TLS storage is unsupported; TLS callbacks alone are supported");
-            long callbacks = image.getLong(tls + 24);
-            if (callbacks != 0) {
-                int at = preferredRva(callbacks);
-                while (true) {
-                    range(at, 8, imageSize);
-                    long callback = image.getLong(at);
-                    if (callback == 0) {
-                        break;
-                    }
-                    int rva = preferredRva(callback);
-                    require(sections.stream().anyMatch(section -> (section.characteristics() & 0x20000000) != 0
-                            && rva >= section.rva() && rva < (long) section.rva() + section.mappedSize()),
-                            "TLS callback must belong to an executable section");
-                    at += 8;
+        validateTls(image);
+    }
+
+    /** Validates the static TLS template, index cell, and callback array. */
+    private void validateTls(ByteBuffer image) {
+        if (directorySize(9) == 0) {
+            return;
+        }
+        require(directorySize(9) >= 40, "Truncated TLS directory");
+        int tls = directoryRva(9);
+        range(tls, 40, imageSize);
+        long start = image.getLong(tls);
+        long end = image.getLong(tls + 8);
+        long index = image.getLong(tls + 16);
+        long callbacks = image.getLong(tls + 24);
+        long zeroFill = Integer.toUnsignedLong(image.getInt(tls + 32));
+        long templateSize = 0;
+        if (start == 0) {
+            require(end == 0, "TLS raw-data end without start");
+        } else {
+            int startRva = preferredRva(start);
+            int endRva = preferredRva(end, true);
+            require(endRva >= startRva, "TLS raw-data range is inverted");
+            templateSize = endRva - startRva;
+        }
+        require(templateSize + zeroFill <= 16L * 1024 * 1024, "TLS block exceeds 16 MiB limit");
+        require(index != 0, "TLS index address is missing");
+        int indexRva = preferredRva(index);
+        range(indexRva, 4, imageSize);
+        require(indexRva % 4 == 0, "TLS index is misaligned");
+        require(inSection(indexRva, 0x80000000), "TLS index must be writable");
+        if (callbacks != 0) {
+            int at = preferredRva(callbacks);
+            require(at % 8 == 0, "TLS callback array is misaligned");
+            for (int count = 0; ; count++) {
+                require(count < 4096, "TLS callback array is unterminated");
+                range(at, 8, imageSize);
+                long callback = image.getLong(at);
+                if (callback == 0) {
+                    break;
                 }
+                require(inSection(preferredRva(callback), 0x20000000),
+                        "TLS callback must belong to an executable section");
+                at += 8;
             }
         }
     }
 
+    private boolean inSection(int rva, int characteristic) {
+        return sections.stream().anyMatch(section -> (section.characteristics() & characteristic) != 0
+                && rva >= section.rva() && rva < (long) section.rva() + section.mappedSize());
+    }
+
     private int preferredRva(long address) {
+        return preferredRva(address, false);
+    }
+
+    private int preferredRva(long address, boolean allowEnd) {
         long rva = address - preferredBase;
-        require(rva >= 0 && rva < imageSize, "TLS address outside image");
+        require(rva >= 0 && (allowEnd ? rva <= imageSize : rva < imageSize), "TLS address outside image");
         return (int) rva;
     }
 
