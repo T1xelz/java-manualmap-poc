@@ -62,13 +62,15 @@ public final class Main {
 
     private static void usage() {
         System.err.println("""
-                Usage: ManualMap <x64-process-id> <x64-dll-path> [options]
+                Usage: ManualMap <process-id> <dll-path> [options]
+                  PE32+ (AMD64) DLL -> native AMD64 process
+                  PE32 (x86) DLL    -> WOW64 (x86) process
                   --reason <0..3|attach|detach|thread-attach|thread-detach>
                   --reserved <decimal|0xhex>
                   --keep-header        retain PE headers
                   --keep-sections      retain .rsrc/.reloc/.pdata
                   --no-protections     leave the image RWX
-                  --no-seh             skip unwind-table registration and EH stubs
-                  --no-tls             skip static TLS provisioning""");
+                  --no-seh             skip unwind-table registration and EH stubs (x64 only)
+                  --no-tls             skip static TLS provisioning (x64 only)""");
     }
 }

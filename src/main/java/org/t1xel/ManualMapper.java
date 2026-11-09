@@ -31,9 +31,16 @@ public final class ManualMapper {
     private static final int MEM_COMMIT_RESERVE = 0x3000;
     private static final int MEM_RELEASE = 0x8000;
     private static final int PAGE_SIZE = 0x1000;
-    private static final int CONTEXT_SIZE = 104;
+    private static final int CONTEXT_SIZE_X64 = 104;
+    private static final int CONTEXT_SIZE_X86 = 36;
     private static final int FLAG_SEH = 1;
     private static final int FLAG_TLS = 2;
+    private static final int WARN_UNWIND = 1;
+    private static final int WARN_TLS = 2;
+    private static final int WARN_X86_TLS = 4;
+    private static final int MACHINE_I386 = 0x14C;
+    private static final int MACHINE_AMD64 = 0x8664;
+    private static final long MAX_ADDRESS_32 = 0xFFFFFFFFL;
     private static final int MAX_REMOTE_SECTION = 64 * 1024 * 1024;
     private static final String LDRP_TLS_PATTERN = "44 8D ? 09 [5-24] B2 01 48 8B ? 30 E8";
 
@@ -47,16 +54,39 @@ public final class ManualMapper {
         PeImage.require(Files.size(dll) <= 512L * 1024 * 1024, "DLL exceeds 512 MiB limit");
         PeImage pe = new PeImage(Files.readAllBytes(dll));
         pe.validateDll();
-        byte[] stub;
-        try (InputStream resource = ManualMapper.class.getResourceAsStream("/loader.bin")) {
-            if (resource == null) {
-                throw new IOException("Missing loader.bin; build with gradlew build first");
-            }
-            stub = resource.readAllBytes();
-        }
+        byte[] stub = resource(pe.is64() ? "/loader64.bin" : "/loader32.bin");
         WinApi api = WinApi.INSTANCE;
         Pointer process = api.OpenProcess(0x043A, false, pid);
         check(process != null, "OpenProcess");
+        try {
+            ShortByReference machine = new ShortByReference();
+            ShortByReference nativeMachine = new ShortByReference();
+            check(api.IsWow64Process2(process, machine, nativeMachine), "IsWow64Process2");
+            int processMachine = Short.toUnsignedInt(machine.getValue());
+            int hostMachine = Short.toUnsignedInt(nativeMachine.getValue());
+            if (pe.is64()) {
+                PeImage.require(processMachine == 0 && hostMachine == MACHINE_AMD64, "Target must be native AMD64");
+                return map64(api, process, pid, pe, options, stub);
+            }
+            PeImage.require(processMachine == MACHINE_I386 && hostMachine == MACHINE_AMD64,
+                    "Target must be a WOW64 (x86) process");
+            return map32(api, process, pid, pe, options, stub);
+        } finally {
+            api.CloseHandle(process);
+        }
+    }
+
+    private static byte[] resource(String name) throws IOException {
+        try (InputStream resource = ManualMapper.class.getResourceAsStream(name)) {
+            if (resource == null) {
+                throw new IOException("Missing " + name + "; build with gradlew build first");
+            }
+            return resource.readAllBytes();
+        }
+    }
+
+    private static long map64(WinApi api, Pointer process, int pid, PeImage pe, MappingOptions options, byte[] stub)
+            throws IOException {
         Pointer image = null;
         Pointer code = null;
         Pointer context = null;
@@ -68,12 +98,7 @@ public final class ManualMapper {
         boolean mapped = false;
         boolean retainImage = false;
         try {
-            ShortByReference machine = new ShortByReference();
-            ShortByReference nativeMachine = new ShortByReference();
-            check(api.IsWow64Process2(process, machine, nativeMachine), "IsWow64Process2");
-            PeImage.require(machine.getValue() == 0 && Short.toUnsignedInt(nativeMachine.getValue()) == 0x8664,
-                    "Target must be native AMD64");
-            Map<String, Long> modules = modules(pid);
+            Map<String, Long> modules = modules(pid, false);
             image = api.VirtualAllocEx(process, Pointer.createConstant(pe.preferredBase), pe.imageSize,
                     MEM_COMMIT_RESERVE, PAGE_READWRITE);
             if (image == null) {
@@ -109,8 +134,8 @@ public final class ManualMapper {
                 }
             }
 
-            context = allocate(process, CONTEXT_SIZE, PAGE_READWRITE);
-            try (Memory data = new Memory(CONTEXT_SIZE)) {
+            context = allocate(process, CONTEXT_SIZE_X64, PAGE_READWRITE);
+            try (Memory data = new Memory(CONTEXT_SIZE_X64)) {
                 data.clear();
                 data.setPointer(0, image);
                 data.setLong(8, loadLibrary);
@@ -127,7 +152,7 @@ public final class ManualMapper {
                 data.setInt(84, (options.sehSupport() ? FLAG_SEH : 0) | (options.tlsSupport() ? FLAG_TLS : 0));
                 data.setInt(88, 0);
                 data.setLong(96, options.dllMainReserved());
-                write(process, context, data.getByteArray(0, CONTEXT_SIZE));
+                write(process, context, data.getByteArray(0, CONTEXT_SIZE_X64));
             }
             thread = api.CreateRemoteThread(process, null, 0, code, context, 0, null);
             check(thread != null, "CreateRemoteThread");
@@ -181,16 +206,123 @@ public final class ManualMapper {
             if (thread != null) {
                 api.CloseHandle(thread);
             }
-            api.CloseHandle(process);
+        }
+    }
+
+    /**
+     * Maps a PE32 image into a WOW64 process. The reference's x86 path supports
+     * relocations and imports only: no static TLS, no SEH/unwind registration,
+     * and no C++ exception stubs.
+     */
+    private static long map32(WinApi api, Pointer process, int pid, PeImage pe, MappingOptions options, byte[] stub)
+            throws IOException {
+        Pointer image = null;
+        Pointer code = null;
+        Pointer context = null;
+        Pointer thread = null;
+        boolean started = false;
+        boolean stopped = false;
+        boolean mapped = false;
+        boolean retainImage = false;
+        try {
+            Map<String, Long> modules = modules(pid, true);
+            image = api.VirtualAllocEx(process, Pointer.createConstant(pe.preferredBase), pe.imageSize,
+                    MEM_COMMIT_RESERVE, PAGE_READWRITE);
+            if (image == null) {
+                PeImage.require(pe.directorySize(5) != 0, "Preferred base occupied and DLL has no relocations");
+                image = allocate(process, pe.imageSize, PAGE_READWRITE);
+            }
+            PeImage.require(Pointer.nativeValue(image) <= MAX_ADDRESS_32, "x86 image allocated above 4 GiB");
+            write(process, image, pe.mappedBytes());
+            protect(process, image, pe.imageSize, PAGE_EXECUTE_READWRITE);
+            check(api.FlushInstructionCache(process, image, pe.imageSize), "FlushInstructionCache(image)");
+            code = allocate(process, stub.length, PAGE_READWRITE);
+            PeImage.require(Pointer.nativeValue(code) <= MAX_ADDRESS_32, "x86 loader allocated above 4 GiB");
+            write(process, code, stub);
+            protect(process, code, stub.length, PAGE_EXECUTE_READ);
+            check(api.FlushInstructionCache(process, code, stub.length), "FlushInstructionCache(loader)");
+
+            long loadLibrary = remoteExport32(process, modules, "kernel32.dll", "LoadLibraryA");
+            long getProcAddress = remoteExport32(process, modules, "kernel32.dll", "GetProcAddress");
+            long getLastError = remoteExport32(process, modules, "kernel32.dll", "GetLastError");
+            PeImage.require(loadLibrary <= MAX_ADDRESS_32 && getProcAddress <= MAX_ADDRESS_32
+                    && getLastError <= MAX_ADDRESS_32, "x86 API address above 4 GiB");
+
+            context = allocate(process, CONTEXT_SIZE_X86, PAGE_READWRITE);
+            PeImage.require(Pointer.nativeValue(context) <= MAX_ADDRESS_32, "x86 context allocated above 4 GiB");
+            try (Memory data = new Memory(CONTEXT_SIZE_X86)) {
+                data.clear();
+                data.setInt(0, (int) Pointer.nativeValue(image));
+                data.setInt(4, (int) loadLibrary);
+                data.setInt(8, (int) getProcAddress);
+                data.setInt(12, 0);
+                data.setInt(16, 0);
+                data.setInt(20, (int) getLastError);
+                data.setInt(24, options.dllMainReason());
+                data.setInt(28, 0);
+                data.setInt(32, (int) options.dllMainReserved());
+                write(process, context, data.getByteArray(0, CONTEXT_SIZE_X86));
+            }
+            thread = api.CreateRemoteThread(process, null, 0, code, context, 0, null);
+            check(thread != null, "CreateRemoteThread");
+            started = true;
+            int wait = api.WaitForSingleObject(thread, 30_000);
+            if (wait != 0) {
+                throw new IOException("Loader wait returned 0x" + Integer.toHexString(wait)
+                        + "; remote allocations retained because the thread may still be running: image=0x"
+                        + Long.toHexString(Pointer.nativeValue(image)) + ", code=0x"
+                        + Long.toHexString(Pointer.nativeValue(code)) + ", context=0x"
+                        + Long.toHexString(Pointer.nativeValue(context)));
+            }
+            stopped = true;
+            retainImage = true;
+            IntByReference exit = new IntByReference();
+            check(api.GetExitCodeThread(thread, exit), "GetExitCodeThread");
+            byte[] result = read(process, context.share(12), 8);
+            int status = littleInt(result, 0);
+            int error = littleInt(result, 4);
+            int warning = littleInt(read(process, context.share(28), 4), 0);
+            if (status != 1 || exit.getValue() != 0) {
+                retainImage = status < 2 || status > 5;
+                throw new IOException("Loader status=" + status + ", exit=0x"
+                        + Integer.toHexString(exit.getValue()) + ", Win32=" + error
+                        + (retainImage ? "; image retained at 0x" + Long.toHexString(Pointer.nativeValue(image)) : ""));
+            }
+            reportWarning(warning);
+            if (options.clearHeader()) {
+                clearHeader(process, image, pe);
+            }
+            if (options.clearNonNeededSections()) {
+                clearSections(process, image, pe, false);
+            }
+            if (options.adjustProtections()) {
+                finalizeProtections(process, image, pe);
+            }
+            mapped = true;
+            return Pointer.nativeValue(image);
+        } finally {
+            if (!started || stopped) {
+                free(process, code);
+                free(process, context);
+                if (!mapped && !retainImage) {
+                    free(process, image);
+                }
+            }
+            if (thread != null) {
+                api.CloseHandle(thread);
+            }
         }
     }
 
     private static void reportWarning(int warning) {
-        if ((warning & 1) != 0) {
+        if ((warning & WARN_UNWIND) != 0) {
             System.err.println("Loader warning: early unwind-table registration failed; C++ exceptions may not unwind");
         }
-        if ((warning & 2) != 0) {
+        if ((warning & WARN_TLS) != 0) {
             System.err.println("Loader warning: static TLS requested but LdrpHandleTlsData was unavailable");
+        }
+        if ((warning & WARN_X86_TLS) != 0) {
+            System.err.println("Loader warning: x86 images do not support static TLS; the TLS directory was ignored");
         }
     }
 
@@ -320,9 +452,10 @@ public final class ManualMapper {
     }
 
     private static SectionBytes readSection(Pointer process, long moduleBase, String name) {
-        byte[] header = read(process, Pointer.createConstant(moduleBase), PAGE_SIZE);
+        byte[] header = ManualMapper.read(process, Pointer.createConstant(moduleBase), PAGE_SIZE);
         ByteBuffer bytes = ByteBuffer.wrap(header).order(ByteOrder.LITTLE_ENDIAN);
-        PeImage.require(bytes.getShort(0) == (short) 0x5A4D && bytes.getInt(0x3C) > 0, "Invalid remote module header");
+        PeImage.require(Short.toUnsignedInt(bytes.getShort(0)) == 0x5A4D && bytes.getInt(0x3C) > 0,
+                "Invalid remote module header");
         int nt = bytes.getInt(0x3C);
         PeImage.range(nt, 24, header.length);
         PeImage.require(bytes.getInt(nt) == 0x4550, "Invalid remote PE signature");
@@ -383,9 +516,10 @@ public final class ManualMapper {
         check(WinApi.INSTANCE.FlushInstructionCache(process, image, pe.imageSize), "FlushInstructionCache(final)");
     }
 
-    private static Map<String, Long> modules(int pid) {
+    private static Map<String, Long> modules(int pid, boolean wow64) {
         WinApi api = WinApi.INSTANCE;
-        Pointer snapshot = api.CreateToolhelp32Snapshot(0x08, pid);
+        // TH32CS_SNAPMODULE32 is required when a 64-bit caller enumerates a WOW64 process.
+        Pointer snapshot = api.CreateToolhelp32Snapshot(0x08 | (wow64 ? 0x10 : 0), pid);
         check(snapshot != null && Pointer.nativeValue(snapshot) != -1L, "CreateToolhelp32Snapshot");
         try {
             Map<String, Long> result = new HashMap<>();
@@ -413,6 +547,105 @@ public final class ManualMapper {
         PeImage.require(base != null, "Target is missing API owner " + module);
         // Resolve forwarded exports locally, then translate the actual owning module's RVA.
         return base + Pointer.nativeValue(function) - Pointer.nativeValue(owner.getValue());
+    }
+
+    /**
+     * Resolves an export in the target's own 32-bit module memory. A 64-bit JVM
+     * cannot reuse local function addresses for a WOW64 target, so the remote
+     * PE export table is parsed, including forwarded exports.
+     */
+    private static long remoteExport32(Pointer process, Map<String, Long> modules, String module, String name) {
+        return remoteExport32(process, modules, module, name, 0);
+    }
+
+    private static long remoteExport32(Pointer process, Map<String, Long> modules, String module, String name,
+            int depth) {
+        PeImage.require(depth < 8, "Export forwarder chain too deep for " + name);
+        String key = module.toLowerCase(Locale.ROOT);
+        if (!key.endsWith(".dll")) {
+            key += ".dll";
+        }
+        Long base = modules.get(key);
+        PeImage.require(base != null, "Target is missing module " + key);
+        RemotePe remote = RemotePe.read(process, base);
+        int rva = remote.exportRva(process, name);
+        PeImage.require(rva != 0, "Target module " + key + " does not export " + name);
+        if (rva >= remote.exportRva() && rva < remote.exportRva() + remote.exportSize()) {
+            String forwarder = remote.readString(process, rva);
+            int dot = forwarder.lastIndexOf('.');
+            PeImage.require(dot > 0, "Malformed export forwarder " + forwarder);
+            String targetModule = forwarder.substring(0, dot);
+            String targetName = forwarder.substring(dot + 1);
+            if (targetModule.startsWith("api-ms-") || targetModule.startsWith("ext-ms-")) {
+                // API-set names are virtual; the implementation lives in KERNELBASE.
+                return remoteExport32(process, modules, "kernelbase.dll", targetName, depth + 1);
+            }
+            return remoteExport32(process, modules, targetModule, targetName, depth + 1);
+        }
+        return base + rva;
+    }
+
+    private record RemotePe(long base, int imageSize, int exportRva, int exportSize) {
+        static RemotePe read(Pointer process, long base) {
+            byte[] header = ManualMapper.read(process, Pointer.createConstant(base), PAGE_SIZE);
+            ByteBuffer b = ByteBuffer.wrap(header).order(ByteOrder.LITTLE_ENDIAN);
+            PeImage.require(Short.toUnsignedInt(b.getShort(0)) == 0x5A4D && b.getInt(0x3C) > 0,
+                    "Invalid remote module header");
+            int nt = b.getInt(0x3C);
+            PeImage.range(nt, 24, header.length);
+            PeImage.require(b.getInt(nt) == 0x4550, "Invalid remote PE signature");
+            int machine = Short.toUnsignedInt(b.getShort(nt + 4));
+            int optional = nt + 24;
+            PeImage.range(optional, 96, header.length);
+            int magic = Short.toUnsignedInt(b.getShort(optional));
+            int directoryOffset;
+            if (machine == MACHINE_I386 && magic == 0x10B) {
+                directoryOffset = optional + 96;
+            } else if (machine == MACHINE_AMD64 && magic == 0x20B) {
+                directoryOffset = optional + 112;
+            } else {
+                throw new IllegalArgumentException("Unsupported remote module format");
+            }
+            PeImage.range(directoryOffset, 8, header.length);
+            int imageSize = b.getInt(optional + 56);
+            PeImage.require(imageSize > 0 && imageSize <= 512 * 1024 * 1024, "Invalid remote image size");
+            return new RemotePe(base, imageSize, b.getInt(directoryOffset), b.getInt(directoryOffset + 4));
+        }
+
+        int exportRva(Pointer process, String name) {
+            if (exportRva == 0 || exportSize < 40) {
+                return 0;
+            }
+            byte[] directory = ManualMapper.read(process, Pointer.createConstant(base + exportRva), 40);
+            ByteBuffer d = ByteBuffer.wrap(directory).order(ByteOrder.LITTLE_ENDIAN);
+            int count = d.getInt(24);
+            int functions = d.getInt(28);
+            int names = d.getInt(32);
+            int ordinals = d.getInt(36);
+            PeImage.require(count > 0 && count <= 65536, "Invalid export name count");
+            byte[] table = ManualMapper.read(process, Pointer.createConstant(base + names), count * 4);
+            ByteBuffer n = ByteBuffer.wrap(table).order(ByteOrder.LITTLE_ENDIAN);
+            for (int i = 0; i < count; i++) {
+                long nameRva = Integer.toUnsignedLong(n.getInt(i * 4));
+                if (!readString(process, base + nameRva).equals(name)) {
+                    continue;
+                }
+                byte[] ordinal = ManualMapper.read(process, Pointer.createConstant(base + ordinals + i * 2L), 2);
+                int index = Short.toUnsignedInt(ByteBuffer.wrap(ordinal).order(ByteOrder.LITTLE_ENDIAN).getShort(0));
+                byte[] function = ManualMapper.read(process, Pointer.createConstant(base + functions + index * 4L), 4);
+                return ByteBuffer.wrap(function).order(ByteOrder.LITTLE_ENDIAN).getInt(0);
+            }
+            return 0;
+        }
+
+        String readString(Pointer process, long address) {
+            byte[] bytes = ManualMapper.read(process, Pointer.createConstant(address), 128);
+            int length = 0;
+            while (length < bytes.length && bytes[length] != 0) {
+                length++;
+            }
+            return new String(bytes, 0, length, StandardCharsets.US_ASCII);
+        }
     }
 
     private static Pointer allocate(Pointer process, long size, int protection) {

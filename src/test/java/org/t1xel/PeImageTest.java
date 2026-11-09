@@ -52,6 +52,43 @@ class PeImageTest {
         return bytes;
     }
 
+    static byte[] minimalDll32() {
+        byte[] bytes = new byte[0x600];
+        ByteBuffer b = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN);
+        b.putShort(0, (short) 0x5A4D);
+        b.putInt(0x3C, 0x80);
+        b.putInt(0x80, 0x4550);
+        b.putShort(0x84, (short) 0x14C);
+        b.putShort(0x86, (short) 2);
+        b.putShort(0x94, (short) 224);
+        b.putShort(0x96, (short) 0x2000);
+        b.putShort(0x98, (short) 0x10B);
+        b.putInt(0x98 + 16, 0x1000);
+        b.putInt(0x98 + 28, 0x10000000);
+        b.putInt(0x98 + 32, 0x1000);
+        b.putInt(0x98 + 56, 0x4000);
+        b.putInt(0x98 + 60, 0x200);
+        b.putInt(0x98 + 92, 16);
+        int section = 0x98 + 224;
+        b.position(section);
+        b.put(new byte[]{'.', 't', 'e', 'x', 't', 0, 0, 0});
+        b.putInt(section + 8, 0x300);
+        b.putInt(section + 12, 0x1000);
+        b.putInt(section + 16, 0x200);
+        b.putInt(section + 20, 0x200);
+        b.putInt(section + 36, 0x60000020);
+        int data = section + 40;
+        b.position(data);
+        b.put(new byte[]{'.', 'd', 'a', 't', 'a', 0, 0, 0});
+        b.putInt(data + 8, 0x1000);
+        b.putInt(data + 12, 0x2000);
+        b.putInt(data + 16, 0x200);
+        b.putInt(data + 20, 0x400);
+        b.putInt(data + 36, 0xC0000040);
+        bytes[0x200] = (byte) 0xC3;
+        return bytes;
+    }
+
     private static void setTls(ByteBuffer b) {
         b.putInt(0x98 + 112 + 9 * 8, 0x1080);
         b.putInt(0x98 + 116 + 9 * 8, 40);
@@ -72,6 +109,45 @@ class PeImageTest {
         assertEquals(0xC3, image.mappedBytes()[0x1000] & 255);
         assertEquals(0, image.mappedBytes()[0x1250]);
         assertEquals(0x180000000L, image.preferredBase);
+    }
+
+    @Test
+    void readsPe32Images() {
+        PeImage image = new PeImage(minimalDll32());
+        image.validateDll();
+        assertEquals(PeImage.Arch.X86, image.arch());
+        assertEquals(4, image.pointerSize());
+        assertEquals(0x10000000L, image.preferredBase);
+        assertEquals(0xC3, image.mappedBytes()[0x1000] & 255);
+        assertEquals(0, image.mappedBytes()[0x1250]);
+    }
+
+    @Test
+    void pe32RelocationsMustBeHighlow() {
+        byte[] bytes = minimalDll32();
+        ByteBuffer b = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN);
+        b.putInt(0x98 + 96 + 5 * 8, 0x2000);
+        b.putInt(0x98 + 96 + 5 * 8 + 4, 12);
+        b.putInt(0x400, 0x1000);
+        b.putInt(0x404, 12);
+        b.putShort(0x408, (short) ((3 << 12) | 0x10));
+        new PeImage(bytes).validateDll();
+        b.putShort(0x408, (short) ((10 << 12) | 0x10));
+        assertThrows(IllegalArgumentException.class, () -> new PeImage(bytes).validateDll());
+    }
+
+    @Test
+    void extractedX86JumpTargetsLinkedEntryPoint() throws Exception {
+        byte[] code;
+        try (var input = PeImageTest.class.getResourceAsStream("/loader32.bin")) {
+            assertTrue(input != null);
+            code = input.readAllBytes();
+        }
+        PeImage linked = new PeImage(Files.readAllBytes(Path.of("build/native/loader32.exe")));
+        assertEquals(PeImage.Arch.X86, linked.arch());
+        int text = linked.sections().stream().filter(section -> section.name().equals(".text")).findFirst().orElseThrow().rva();
+        assertEquals(0xE9, code[0] & 255);
+        assertEquals(linked.entryRva - text, ByteBuffer.wrap(code).order(ByteOrder.LITTLE_ENDIAN).getInt(1));
     }
 
     @Test
@@ -153,11 +229,11 @@ class PeImageTest {
     @Test
     void extractedJumpTargetsLinkedEntryPoint() throws Exception {
         byte[] code;
-        try (var input = PeImageTest.class.getResourceAsStream("/loader.bin")) {
+        try (var input = PeImageTest.class.getResourceAsStream("/loader64.bin")) {
             assertTrue(input != null);
             code = input.readAllBytes();
         }
-        PeImage linked = new PeImage(Files.readAllBytes(Path.of("build/native/loader.exe")));
+        PeImage linked = new PeImage(Files.readAllBytes(Path.of("build/native/loader64.exe")));
         int text = linked.sections().stream().filter(section -> section.name().equals(".text")).findFirst().orElseThrow().rva();
         assertEquals(0xE9, code[0] & 255);
         assertEquals(linked.entryRva - text, ByteBuffer.wrap(code).order(ByteOrder.LITTLE_ENDIAN).getInt(1));

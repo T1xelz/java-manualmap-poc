@@ -35,7 +35,7 @@ val shellcode by tasks.registering(JavaExec::class) {
     classpath = files(tasks.compileJava.flatMap { it.destinationDirectory }) + configurations.runtimeClasspath.get()
     mainClass.set("org.t1xel.tools.ShellcodeTool")
     args("build", projectDir.absolutePath)
-    inputs.file("native/loader.cpp")
+    inputs.files("native/loader.cpp", "native/loader32.cpp")
     outputs.dir(layout.buildDirectory.dir("generated-shellcode"))
 }
 
@@ -60,6 +60,6 @@ tasks.register<Test>("integrationTest") {
     testClassesDirs = sourceSets.test.get().output.classesDirs
     classpath = sourceSets.test.get().runtimeClasspath
     useJUnitPlatform()
-    filter.includeTestsMatching("*MappingIntegrationTest")
+    filter.includeTestsMatching("*MappingIntegration*")
     systemProperty("manualmap.integration", "true")
 }

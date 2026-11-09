@@ -22,10 +22,16 @@ public final class ShellcodeTool {
             Path output = root.resolve("build/native");
             Files.createDirectories(output);
             if (args[0].equals("build")) {
-                compile(root, output, "loader.cpp", "loader", ".exe",
-                        "/GS- /GR- /EHs-c- /O1 /Oi /Gs9999999 /guard:cf- /Zl",
-                        "/ENTRY:ManualMapShellcode /NODEFAULTLIB /SUBSYSTEM:CONSOLE /FIXED:NO /DYNAMICBASE:NO /OPT:NOICF /OPT:NOREF /MERGE:.rdata=.text");
-                extract(output.resolve("loader.exe"), root.resolve("build/generated-shellcode/loader.bin"));
+                String loaderFlags = "/GS- /GR- /EHs-c- /O1 /Oi /Gs9999999 /guard:cf- /Zl";
+                String loaderLink = "/NODEFAULTLIB /SUBSYSTEM:CONSOLE /FIXED:NO /DYNAMICBASE:NO /OPT:NOICF"
+                        + " /OPT:NOREF /MERGE:.rdata=.text";
+                compile(root, output, PeImage.Arch.X64, "loader.cpp", "loader64", ".exe",
+                        loaderFlags, "ManualMapShellcode", null, loaderLink);
+                extract(output.resolve("loader64.exe"), root.resolve("build/generated-shellcode/loader64.bin"));
+                compile(root, output, PeImage.Arch.X86, "loader32.cpp", "loader32", ".exe",
+                        loaderFlags, "ManualMapShellcode32", "ManualMapShellcode32@4",
+                        loaderLink + " /SAFESEH:NO");
+                extract(output.resolve("loader32.exe"), root.resolve("build/generated-shellcode/loader32.bin"));
             } else {
                 // Same source across every EH/CRT combination the reference
                 // test matrix covers (x64 only).
@@ -37,13 +43,19 @@ public final class ShellcodeTool {
                         new Fixture("ehsc_mt", "/EHsc", "/MT", "EH_MODE_EHSC"),
                         new Fixture("eha_mt", "/EHa", "/MT", "EH_MODE_EHA"),
                         new Fixture("ehac_mt", "/EHac", "/MT", "EH_MODE_EHAC"))) {
-                    compile(root, output, "fixture.cpp", "fixture_" + fixture.name(), ".dll",
+                    compile(root, output, PeImage.Arch.X64, "fixture.cpp", "fixture_" + fixture.name(), ".dll",
                             fixture.eh() + " " + fixture.crt() + " /O2 /D" + fixture.define()
                                     + " /DEH_MODE_LABEL=\"" + fixture.name().toUpperCase() + "\"",
-                            "/DLL");
+                            null, null, "/DLL");
                 }
-                compile(root, output, "host.cpp", "host", ".exe",
-                        "/GS- /O1 /Zl", "/ENTRY:HostMain /SUBSYSTEM:CONSOLE /NODEFAULTLIB kernel32.lib");
+                compile(root, output, PeImage.Arch.X64, "host.cpp", "host", ".exe",
+                        "/GS- /O1 /Zl", "HostMain", null, "/SUBSYSTEM:CONSOLE /NODEFAULTLIB kernel32.lib");
+                // x86 parity fixture: freestanding, no CRT/TLS/SEH.
+                compile(root, output, PeImage.Arch.X86, "fixture32.cpp", "fixture32", ".dll",
+                        "/GS- /GR- /EHs-c- /O2 /Zl", "DllMain", "DllMain@12",
+                        "/DLL /NODEFAULTLIB kernel32.lib /SAFESEH:NO");
+                compile(root, output, PeImage.Arch.X86, "host.cpp", "host32", ".exe",
+                        "/GS- /O1 /Zl", "HostMain", null, "/SUBSYSTEM:CONSOLE /NODEFAULTLIB kernel32.lib");
             }
         } else if (args.length == 3 && args[0].equals("extract")) {
             extract(Path.of(args[1]), Path.of(args[2]));
@@ -98,36 +110,55 @@ public final class ShellcodeTool {
         return text.append("};\n").toString();
     }
 
-    private static void compile(Path root, Path output, String source, String stem, String extension,
-            String flags, String linkFlags) throws IOException, InterruptedException {
-        String command = "call " + quote(findVcvars().toString()) + " >nul && cl /nologo /W4 " + flags
-                + " /Fo" + quote(output.resolve(stem + ".obj").toString())
-                + " " + quote(root.resolve("native").resolve(source).toString())
-                + " /link /NOLOGO /INCREMENTAL:NO /OUT:" + quote(output.resolve(stem + extension).toString())
-                + " " + linkFlags;
-        Process process = new ProcessBuilder("cmd.exe", "/d", "/s", "/c", command).directory(output.toFile())
-                .inheritIO().start();
-        if (process.waitFor() != 0) {
-            throw new IOException("MSVC build failed for " + source);
+    private static void compile(Path root, Path output, PeImage.Arch arch, String source, String stem,
+            String extension, String flags, String entry, String decoratedEntry, String linkFlags)
+            throws IOException, InterruptedException {
+        String object = quote(output.resolve(stem + ".obj").toString());
+        String input = quote(root.resolve("native").resolve(source).toString());
+        String linked = quote(output.resolve(stem + extension).toString());
+        String tail = "/link /NOLOGO /INCREMENTAL:NO /OUT:" + linked + " " + linkFlags;
+        String prefix = "call " + quote(findVcvars(arch).toString()) + " >nul && cl /nologo /W4 " + flags
+                + " /Fo" + object + " " + input + " " + tail;
+        StringBuilder log = new StringBuilder();
+        boolean built;
+        if (entry == null) {
+            built = run(prefix, log);
+        } else if (run(prefix + " /ENTRY:" + entry, log)) {
+            built = true;
+        } else {
+            built = decoratedEntry != null && run(prefix + " /ENTRY:" + decoratedEntry, log);
         }
+        if (built) {
+            return;
+        }
+        System.err.print(log);
+        throw new IOException("MSVC build failed for " + source);
     }
 
-    private static Path findVcvars() throws IOException, InterruptedException {
-        String override = System.getenv("MANUALMAP_VCVARS64");
+    private static boolean run(String command, StringBuilder log) throws IOException, InterruptedException {
+        Process process = new ProcessBuilder("cmd.exe", "/d", "/s", "/c", command)
+                .redirectErrorStream(true).start();
+        log.append(new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8));
+        return process.waitFor() == 0;
+    }
+
+    private static Path findVcvars(PeImage.Arch arch) throws IOException, InterruptedException {
+        boolean x64 = arch == PeImage.Arch.X64;
+        String override = System.getenv(x64 ? "MANUALMAP_VCVARS64" : "MANUALMAP_VCVARS32");
         if (override != null && Files.isRegularFile(Path.of(override))) {
             return Path.of(override);
         }
         String programFiles = System.getenv("ProgramFiles(x86)");
-        PeImage.require(programFiles != null, "Native build requires Windows and MSVC x64 build tools");
+        PeImage.require(programFiles != null, "Native build requires Windows and MSVC build tools");
         Path vswhere = Path.of(programFiles, "Microsoft Visual Studio", "Installer", "vswhere.exe");
         Process process = new ProcessBuilder(List.of(vswhere.toString(), "-latest", "-products", "*", "-requires",
                 "Microsoft.VisualStudio.Component.VC.Tools.x86.x64", "-property", "installationPath"))
                 .redirectError(ProcessBuilder.Redirect.INHERIT).start();
         String installation = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8).strip();
         if (process.waitFor() != 0 || installation.isEmpty()) {
-            throw new IOException("Install MSVC x64 tools and a Windows SDK, or set MANUALMAP_VCVARS64");
+            throw new IOException("Install MSVC x86/x64 tools and a Windows SDK, or set MANUALMAP_VCVARS64/MANUALMAP_VCVARS32");
         }
-        return Path.of(installation, "VC", "Auxiliary", "Build", "vcvars64.bat");
+        return Path.of(installation, "VC", "Auxiliary", "Build", x64 ? "vcvars64.bat" : "vcvars32.bat");
     }
 
     private static String quote(String value) {
