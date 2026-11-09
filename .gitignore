@@ -1,48 +1,20 @@
-.gradle
+# Gradle caches and build outputs
+.gradle/
+.kotlin/
 build/
-!gradle/wrapper/gradle-wrapper.jar
-!**/src/main/**/build/
-!**/src/test/**/build/
-.kotlin
+out/
 
-### IntelliJ IDEA ###
-.idea/modules.xml
-.idea/jarRepositories.xml
-.idea/compiler.xml
-.idea/libraries/
-*.iws
+# Local IDE settings
+.idea/
+.vscode/
 *.iml
 *.ipr
-out/
-!**/src/main/**/out/
-!**/src/test/**/out/
-
-### Eclipse ###
-.apt_generated
+*.iws
 .classpath
-.factorypath
 .project
-.settings
-.springBeans
-.sts4-cache
-bin/
-!**/src/main/**/bin/
-!**/src/test/**/bin/
+.settings/
 
-### NetBeans ###
-/nbproject/private/
-/nbbuild/
-/dist/
-/nbdist/
-/.nb-gradle/
-
-### VS Code ###
-.vscode/
-
-### Mac OS ###
-.DS_Store
-
-# Native compiler products and local configuration
+# Native compiler outputs
 *.obj
 *.pdb
 *.ilk
@@ -50,5 +22,16 @@ bin/
 *.lib
 *.exe
 *.dll
+
+# Local configuration and secrets
 .env
 .env.*
+!.env.example
+*.local.properties
+
+# OS and JVM temporary files
+.DS_Store
+Thumbs.db
+hs_err_pid*
+replay_pid*
+*.hprof

@@ -21,6 +21,76 @@ mapping, imports, and relocations only. PE layout follows Microsoft's
 | MSVC C++ exceptions (`/EH*`) | yes | no |
 | Header/section clearing, protections | yes | yes |
 
+## Project layout
+
+- `library/src/main/java`: reusable API and implementation (package `org.t1xel`).
+- `library/src/main/cpp`: native loader sources.
+- `library/src/tools/java`: build-time compiler/converter, excluded from the runtime JAR.
+- `library/src/test/java`: PE parsing and API contract tests.
+- `library/src/test/cpp`: disposable native hosts and fixtures.
+- `library/src/integrationTest/java`: opt-in process integration tests.
+- `cli/src/main/java`: argument parsing, console output and exit codes.
+- `gradle/wrapper`: committed wrapper; IDE state and build outputs are ignored.
+
+Root `build` and `check` aggregate both modules. Integration tests run only with
+`:library:integrationTest`. Unit tests also verify generated loader resources,
+so they currently require Windows and MSVC. After changing the installed MSVC/SDK,
+use `clean build` to regenerate native resources.
+
+## Library usage
+
+The library artifact is `library/build/libs/manualmap-1.0.jar`; it includes both
+loader resources, but no CLI or compiler tools. A sources JAR is built alongside it.
+JNA is a runtime dependency, so prefer a published dependency over copying a
+single JAR. Publish locally with:
+
+```powershell
+.\gradlew.bat :library:publishToMavenLocal
+```
+
+In a consuming Gradle project (JDK 21 or newer):
+
+```kotlin
+repositories {
+    mavenLocal()
+    mavenCentral()
+}
+
+dependencies {
+    implementation("org.t1xel:manualmap:1.0")
+}
+```
+
+Public entry points remain `ManualMapper` and `MappingOptions`. The existing
+`map(...)` methods return an address; `mapResult(...)` additionally returns an
+immutable list of diagnostic messages. Neither method prints or exits the JVM.
+A mapper may be reused concurrently: every invocation has its own diagnostics.
+
+```java
+import org.t1xel.ManualMapper;
+import org.t1xel.MappingException;
+import org.t1xel.MappingResult;
+
+import java.nio.file.Path;
+
+try {
+    MappingResult result = new ManualMapper().mapResult(pid, Path.of(dllPath));
+    // result.address(): mapped image address
+    // result.warnings(): non-fatal loader/cleanup diagnostics
+} catch (MappingException error) {
+    // error.kind(): VALIDATION, UNSUPPORTED_PLATFORM, IO, NATIVE_CALL, LOADER, WAIT
+    // error.operation() / error.nativeError(): optional Win32 call details
+    // error.getCause(): original validation, I/O or native-call exception
+}
+```
+
+`MappingException` extends `IOException`, preserving existing I/O catch blocks.
+Validation failures from mapping now use `Kind.VALIDATION` instead of escaping as
+`IllegalArgumentException`; invalid `MappingOptions` still fail immediately in
+the constructor/builder. Diagnostic strings are for display, not parsing.
+Warnings are returned on successful calls; a failed call throws its exception.
+Memory retention and unload limitations below still apply to library callers.
+
 ## Build
 
 Requirements: Windows x64, an AMD64 JDK 21, MSVC x86/x64 C++ build tools, and a
@@ -31,33 +101,33 @@ override discovery.
 
 ```powershell
 .\gradlew.bat build
-.\gradlew.bat installDist
+.\gradlew.bat :cli:installDist
 ```
 
-Gradle compiles `native/loader.cpp` with `vcvars64`, links a freestanding PE,
+Gradle compiles `library/src/main/cpp/loader.cpp` with `vcvars64`, links a freestanding PE,
 extracts its `.text`, and packages `loader64.bin` as a Java resource. It does the
-same for `native/loader32.cpp` with `vcvars32`, producing `loader32.bin`. No
+same for `library/src/main/cpp/loader32.cpp` with `vcvars32`, producing `loader32.bin`. No
 Python, assembly source, objcopy, or hand-maintained instruction array is
 required. Linker-generated read-only data is merged into `.text`, and the
 converter prepends a relative jump to the PE entry point. It rejects imports,
 base relocations, and unexpected sections. This extractor is intended for the
 included freestanding stubs, rather than arbitrary compiled C++ programs.
 
-`.\gradlew.bat fixtures` builds the disposable hosts and fixtures:
+`.\gradlew.bat :library:fixtures` builds the disposable hosts and fixtures:
 
-- x64: five copies of `native/fixture.cpp`, one per EH/CRT combination from the
+- x64: five copies of `library/src/test/cpp/fixture.cpp`, one per EH/CRT combination from the
   reference matrix: `fixture_ehsc_md.dll`, `fixture_eha_md.dll`,
   `fixture_ehsc_mt.dll`, `fixture_eha_mt.dll`, `fixture_ehac_mt.dll`, plus
   `host.exe`.
-- x86: `native/fixture32.cpp` as `fixture32.dll` and `host32.exe`, both
+- x86: `library/src/test/cpp/fixture32.cpp` as `fixture32.dll` and `host32.exe`, both
   freestanding (`/NODEFAULTLIB`, no CRT, no TLS, no SEH, no C++ exceptions).
 
 Outputs:
 
-- `build/generated-shellcode/loader64.bin` / `loader32.bin`: executable loader bytes.
-- `build/generated-shellcode/*.java.txt`: equivalent Java byte arrays.
-- `build/native/`: hosts, fixture DLLs, and intermediate objects.
-- `build/install/ManualMap/`: distribution with JNA dependencies and launcher.
+- `library/build/generated-shellcode/loader64.bin` / `loader32.bin`: executable loader bytes.
+- `library/build/generated-shellcode/*.java.txt`: equivalent Java byte arrays.
+- `library/build/native/`: hosts, fixture DLLs, and intermediate objects.
+- `cli/build/install/ManualMap/`: distribution with JNA dependencies and launcher.
 
 ## Run
 
@@ -65,9 +135,9 @@ Pass a decimal PID and an absolute DLL path. A PE32+ DLL requires a native AMD64
 target; a PE32 DLL requires a WOW64 (x86) target. The JVM itself is always AMD64.
 
 ```powershell
-.\gradlew.bat run --args='1234 C:\samples\fixture.dll'
+.\gradlew.bat :cli:run --args='1234 C:\samples\fixture.dll'
 # Or use the installed distribution:
-.\build\install\ManualMap\bin\ManualMap.bat 1234 C:\samples\fixture.dll
+.\cli\build\install\ManualMap\bin\ManualMap.bat 1234 C:\samples\fixture.dll
 ```
 
 Options after the DLL path:
@@ -85,7 +155,7 @@ Options after the DLL path:
 Run the included integration test, which launches and disposes of its own hosts:
 
 ```powershell
-.\gradlew.bat integrationTest
+.\gradlew.bat :library:integrationTest
 ```
 
 The x64 suite maps all five EH/CRT fixture variants and asserts the same result
@@ -232,12 +302,13 @@ x86, 36 bytes:
 
 ## Standalone converter
 
-After `installDist`, the tool also runs directly with the distribution classpath:
+The compiler/converter lives in the library's separate `tools` source set and
+is excluded from the runtime JAR. Run it through Gradle from the project root:
 
 ```powershell
-java -cp 'build/install/ManualMap/lib/*' org.t1xel.tools.ShellcodeTool extract build/native/loader64.exe build/loader64.bin
-java -cp 'build/install/ManualMap/lib/*' org.t1xel.tools.ShellcodeTool bytes build/loader64.bin
+.\gradlew.bat :library:converter --args='extract library/build/native/loader64.exe build/loader64.bin'
+.\gradlew.bat :library:converter --args='bytes build/loader64.bin'
 ```
 
-Compile loader changes through Gradle so the freestanding compiler/linker flags
-remain consistent. Generated native products and byte arrays stay under `build/`.
+Compile loader changes through Gradle so compiler/linker flags remain consistent.
+Generated native products and byte arrays stay under the module's `build/`.

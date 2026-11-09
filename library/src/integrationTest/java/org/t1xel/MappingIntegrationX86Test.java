@@ -76,7 +76,7 @@ class MappingIntegrationX86Test {
     void rejectsX86ImageForNativeAmd64Target() throws Exception {
         Path dll = Path.of("build/native/fixture32.dll").toAbsolutePath();
         try (Host host = Host.launch("build/native/host.exe")) {
-            IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+            MappingException error = assertThrows(MappingException.class,
                     () -> new ManualMapper().map(host.pid(), dll));
             assertTrue(error.getMessage().contains("WOW64"), error.getMessage());
         }
@@ -86,7 +86,7 @@ class MappingIntegrationX86Test {
     void rejectsAmd64ImageForWow64Target() throws Exception {
         Path dll = Path.of("build/native/fixture_ehsc_md.dll").toAbsolutePath();
         try (Host host = Host.launch()) {
-            IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+            MappingException error = assertThrows(MappingException.class,
                     () -> new ManualMapper().map(host.pid(), dll));
             assertTrue(error.getMessage().contains("AMD64"), error.getMessage());
         }

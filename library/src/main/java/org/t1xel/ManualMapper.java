@@ -16,8 +16,10 @@ import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 
@@ -44,13 +46,54 @@ public final class ManualMapper {
     private static final int MAX_REMOTE_SECTION = 64 * 1024 * 1024;
     private static final String LDRP_TLS_PATTERN = "44 8D ? 09 [5-24] B2 01 48 8B ? 30 E8";
 
-    public long map(int pid, Path dll) throws IOException {
+    private final List<String> warnings;
+
+    public ManualMapper() {
+        this(List.of());
+    }
+
+    private ManualMapper(List<String> warnings) {
+        this.warnings = warnings;
+    }
+
+    public long map(int pid, Path dll) throws MappingException {
         return map(pid, dll, MappingOptions.defaults());
     }
 
-    public long map(int pid, Path dll, MappingOptions options) throws IOException {
-        PeImage.require(Platform.isWindows() && Native.POINTER_SIZE == 8 && Platform.isIntel(),
-                "Use an AMD64 Windows JVM");
+    public long map(int pid, Path dll, MappingOptions options) throws MappingException {
+        return mapResult(pid, dll, options).address();
+    }
+
+    public MappingResult mapResult(int pid, Path dll) throws MappingException {
+        return mapResult(pid, dll, MappingOptions.defaults());
+    }
+
+    /** Each invocation owns its diagnostics; callers may reuse this mapper concurrently. */
+    public MappingResult mapResult(int pid, Path dll, MappingOptions options) throws MappingException {
+        List<String> diagnostics = new ArrayList<>();
+        try {
+            PeImage.require(pid > 0, "PID must be positive");
+            PeImage.require(dll != null, "DLL path is required");
+            PeImage.require(options != null, "Mapping options are required");
+            long address = new ManualMapper(diagnostics).execute(pid, dll, options);
+            return new MappingResult(address, diagnostics);
+        } catch (MappingException exception) {
+            throw exception;
+        } catch (NativeCallException exception) {
+            throw new MappingException(MappingException.Kind.NATIVE_CALL, exception.getMessage(), exception,
+                    exception.operation, exception.error);
+        } catch (IllegalArgumentException exception) {
+            throw new MappingException(MappingException.Kind.VALIDATION, exception.getMessage(), exception);
+        } catch (IOException exception) {
+            throw new MappingException(MappingException.Kind.IO, exception.getMessage(), exception);
+        }
+    }
+
+    private long execute(int pid, Path dll, MappingOptions options) throws IOException {
+        if (!Platform.isWindows() || Native.POINTER_SIZE != 8 || !Platform.isIntel()) {
+            throw new MappingException(MappingException.Kind.UNSUPPORTED_PLATFORM,
+                    "Use an AMD64 Windows JVM", null);
+        }
         PeImage.require(Files.size(dll) <= 512L * 1024 * 1024, "DLL exceeds 512 MiB limit");
         PeImage pe = new PeImage(Files.readAllBytes(dll));
         pe.validateDll();
@@ -85,7 +128,7 @@ public final class ManualMapper {
         }
     }
 
-    private static long map64(WinApi api, Pointer process, int pid, PeImage pe, MappingOptions options, byte[] stub)
+    private long map64(WinApi api, Pointer process, int pid, PeImage pe, MappingOptions options, byte[] stub)
             throws IOException {
         Pointer image = null;
         Pointer code = null;
@@ -130,7 +173,7 @@ public final class ManualMapper {
             if (options.tlsSupport() && pe.directorySize(9) != 0) {
                 ldrpHandleTlsData = findLdrpHandleTlsData(process, modules);
                 if (ldrpHandleTlsData == 0) {
-                    System.err.println("Loader warning: LdrpHandleTlsData not found; static TLS unavailable");
+                    warnings.add("Loader warning: LdrpHandleTlsData not found; static TLS unavailable");
                 }
             }
 
@@ -159,11 +202,11 @@ public final class ManualMapper {
             started = true;
             int wait = api.WaitForSingleObject(thread, 30_000);
             if (wait != 0) {
-                throw new IOException("Loader wait returned 0x" + Integer.toHexString(wait)
+                throw new MappingException(MappingException.Kind.WAIT, "Loader wait returned 0x" + Integer.toHexString(wait)
                         + "; remote allocations retained because the thread may still be running: image=0x"
                         + Long.toHexString(Pointer.nativeValue(image)) + ", code=0x"
                         + Long.toHexString(Pointer.nativeValue(code)) + ", context=0x"
-                        + Long.toHexString(Pointer.nativeValue(context)));
+                        + Long.toHexString(Pointer.nativeValue(context)), null);
             }
             stopped = true;
             // A fault may have left registered unwind tables or DLL-owned threads behind.
@@ -177,9 +220,9 @@ public final class ManualMapper {
             if (status != 1 || exit.getValue() != 0) {
                 // Only pre-initialization failures can be rolled back without DLL side effects.
                 retainImage = status < 2 || status > 5;
-                throw new IOException("Loader status=" + status + ", exit=0x"
+                throw new MappingException(MappingException.Kind.LOADER, "Loader status=" + status + ", exit=0x"
                         + Integer.toHexString(exit.getValue()) + ", Win32=" + error
-                        + (retainImage ? "; image retained at 0x" + Long.toHexString(Pointer.nativeValue(image)) : ""));
+                        + (retainImage ? "; image retained at 0x" + Long.toHexString(Pointer.nativeValue(image)) : ""), null);
             }
             reportWarning(warning);
             if (options.clearHeader()) {
@@ -214,7 +257,7 @@ public final class ManualMapper {
      * relocations and imports only: no static TLS, no SEH/unwind registration,
      * and no C++ exception stubs.
      */
-    private static long map32(WinApi api, Pointer process, int pid, PeImage pe, MappingOptions options, byte[] stub)
+    private long map32(WinApi api, Pointer process, int pid, PeImage pe, MappingOptions options, byte[] stub)
             throws IOException {
         Pointer image = null;
         Pointer code = null;
@@ -268,11 +311,11 @@ public final class ManualMapper {
             started = true;
             int wait = api.WaitForSingleObject(thread, 30_000);
             if (wait != 0) {
-                throw new IOException("Loader wait returned 0x" + Integer.toHexString(wait)
+                throw new MappingException(MappingException.Kind.WAIT, "Loader wait returned 0x" + Integer.toHexString(wait)
                         + "; remote allocations retained because the thread may still be running: image=0x"
                         + Long.toHexString(Pointer.nativeValue(image)) + ", code=0x"
                         + Long.toHexString(Pointer.nativeValue(code)) + ", context=0x"
-                        + Long.toHexString(Pointer.nativeValue(context)));
+                        + Long.toHexString(Pointer.nativeValue(context)), null);
             }
             stopped = true;
             retainImage = true;
@@ -284,9 +327,9 @@ public final class ManualMapper {
             int warning = littleInt(read(process, context.share(28), 4), 0);
             if (status != 1 || exit.getValue() != 0) {
                 retainImage = status < 2 || status > 5;
-                throw new IOException("Loader status=" + status + ", exit=0x"
+                throw new MappingException(MappingException.Kind.LOADER, "Loader status=" + status + ", exit=0x"
                         + Integer.toHexString(exit.getValue()) + ", Win32=" + error
-                        + (retainImage ? "; image retained at 0x" + Long.toHexString(Pointer.nativeValue(image)) : ""));
+                        + (retainImage ? "; image retained at 0x" + Long.toHexString(Pointer.nativeValue(image)) : ""), null);
             }
             reportWarning(warning);
             if (options.clearHeader()) {
@@ -314,15 +357,15 @@ public final class ManualMapper {
         }
     }
 
-    private static void reportWarning(int warning) {
+    private void reportWarning(int warning) {
         if ((warning & WARN_UNWIND) != 0) {
-            System.err.println("Loader warning: early unwind-table registration failed; C++ exceptions may not unwind");
+            warnings.add("Loader warning: early unwind-table registration failed; C++ exceptions may not unwind");
         }
         if ((warning & WARN_TLS) != 0) {
-            System.err.println("Loader warning: static TLS requested but LdrpHandleTlsData was unavailable");
+            warnings.add("Loader warning: static TLS requested but LdrpHandleTlsData was unavailable");
         }
         if ((warning & WARN_X86_TLS) != 0) {
-            System.err.println("Loader warning: x86 images do not support static TLS; the TLS directory was ignored");
+            warnings.add("Loader warning: x86 images do not support static TLS; the TLS directory was ignored");
         }
     }
 
@@ -418,7 +461,7 @@ public final class ManualMapper {
         return page;
     }
 
-    private static long findLdrpHandleTlsData(Pointer process, Map<String, Long> modules) {
+    private long findLdrpHandleTlsData(Pointer process, Map<String, Long> modules) {
         Long ntdll = modules.get("ntdll.dll");
         if (ntdll == null) {
             return 0;
@@ -443,7 +486,7 @@ public final class ManualMapper {
             }
             return at < text.bytes.length ? ntdll + text.rva + at : 0;
         } catch (RuntimeException exception) {
-            System.err.println("Loader warning: TLS pattern scan failed: " + exception.getMessage());
+            warnings.add("Loader warning: TLS pattern scan failed: " + exception.getMessage());
             return 0;
         }
     }
@@ -672,15 +715,26 @@ public final class ManualMapper {
         check(WinApi.INSTANCE.VirtualProtectEx(process, address, size, protection, new IntByReference()), "VirtualProtectEx");
     }
 
-    private static void free(Pointer process, Pointer address) {
+    private void free(Pointer process, Pointer address) {
         if (address != null && !WinApi.INSTANCE.VirtualFreeEx(process, address, 0, MEM_RELEASE)) {
-            System.err.println("VirtualFreeEx failed: Win32=" + Native.getLastError());
+            warnings.add("VirtualFreeEx failed: Win32=" + Native.getLastError());
         }
     }
 
     private static void check(boolean success, String operation) {
         if (!success) {
-            throw new IllegalStateException(operation + " failed: Win32=" + Native.getLastError());
+            throw new NativeCallException(operation, Native.getLastError());
+        }
+    }
+
+    private static final class NativeCallException extends IllegalStateException {
+        private final String operation;
+        private final int error;
+
+        private NativeCallException(String operation, int error) {
+            super(operation + " failed: Win32=" + error);
+            this.operation = operation;
+            this.error = error;
         }
     }
 }

@@ -30,8 +30,14 @@ public final class Main {
                     default -> throw new IllegalArgumentException("Unknown option: " + args[i]);
                 }
             }
-            long address = new ManualMapper().map(pid, Path.of(args[1]), options.build());
-            System.out.printf("Mapped image at 0x%016X%n", address);
+            MappingResult result = new ManualMapper().mapResult(pid, Path.of(args[1]), options.build());
+            for (String warning : result.warnings()) {
+                System.err.println(warning);
+            }
+            System.out.printf("Mapped image at 0x%016X%n", result.address());
+        } catch (MappingException exception) {
+            System.err.println(exception.kind() + ": " + exception.getMessage());
+            System.exit(1);
         } catch (Exception exception) {
             System.err.println(exception.getMessage());
             System.exit(1);

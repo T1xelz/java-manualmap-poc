@@ -114,7 +114,7 @@ public final class ShellcodeTool {
             String extension, String flags, String entry, String decoratedEntry, String linkFlags)
             throws IOException, InterruptedException {
         String object = quote(output.resolve(stem + ".obj").toString());
-        String input = quote(root.resolve("native").resolve(source).toString());
+        String input = quote(root.resolve(source.startsWith("loader") ? "src/main/cpp" : "src/test/cpp").resolve(source).toString());
         String linked = quote(output.resolve(stem + extension).toString());
         String tail = "/link /NOLOGO /INCREMENTAL:NO /OUT:" + linked + " " + linkFlags;
         String prefix = "call " + quote(findVcvars(arch).toString()) + " >nul && cl /nologo /W4 " + flags
