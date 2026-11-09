@@ -100,6 +100,15 @@ publishing {
         create<MavenPublication>("library") {
             from(components["java"])
             artifactId = "manualmap"
+            pom {
+                licenses {
+                    license {
+                        name.set("MIT License")
+                        url.set("https://opensource.org/license/mit")
+                        distribution.set("repo")
+                    }
+                }
+            }
         }
     }
 }

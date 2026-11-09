@@ -11,6 +11,12 @@ subprojects {
     repositories {
         mavenCentral()
     }
+
+    tasks.withType<Jar>().configureEach {
+        from(rootProject.files("LICENSE", "THIRD_PARTY_NOTICES.md")) {
+            into("META-INF")
+        }
+    }
 }
 
 tasks.named("build") {

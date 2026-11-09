@@ -312,3 +312,10 @@ is excluded from the runtime JAR. Run it through Gradle from the project root:
 
 Compile loader changes through Gradle so compiler/linker flags remain consistent.
 Generated native products and byte arrays stay under the module's `build/`.
+
+## License
+
+Licensed under the [MIT License](LICENSE). Copyright (c) 2026 T1xel.
+See [third-party notices](THIRD_PARTY_NOTICES.md) for the upstream design
+reference and runtime dependency notices. License files are included in the
+published JARs and CLI distributions.

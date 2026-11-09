@@ -18,3 +18,11 @@ application {
 base {
     archivesName.set("ManualMap")
 }
+
+distributions {
+    main {
+        contents {
+            from(rootProject.file("LICENSE"), rootProject.file("THIRD_PARTY_NOTICES.md"))
+        }
+    }
+}
