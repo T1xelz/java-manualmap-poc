@@ -28,22 +28,6 @@ static constexpr DWORD kTlsSupport = 2;
 static constexpr DWORD kWarnUnwind = 1;
 static constexpr DWORD kWarnTls = 2;
 
-static bool isCxxThrowName(const char* name) {
-    return name[0] == '_' && name[1] == 'C' && name[2] == 'x' && name[3] == 'x'
-        && name[4] == 'T' && name[5] == 'h' && name[6] == 'r' && name[7] == 'o'
-        && name[8] == 'w' && name[9] == 'E' && name[10] == 'x' && name[11] == 'c'
-        && name[12] == 'e' && name[13] == 'p' && name[14] == 't' && name[15] == 'i'
-        && name[16] == 'o' && name[17] == 'n' && name[18] == '\0';
-}
-
-static bool isRtlPcToFileHeaderName(const char* name) {
-    return name[0] == 'R' && name[1] == 't' && name[2] == 'l' && name[3] == 'P'
-        && name[4] == 'c' && name[5] == 'T' && name[6] == 'o' && name[7] == 'F'
-        && name[8] == 'i' && name[9] == 'l' && name[10] == 'e' && name[11] == 'H'
-        && name[12] == 'e' && name[13] == 'a' && name[14] == 'd' && name[15] == 'e'
-        && name[16] == 'r' && name[17] == '\0';
-}
-
 extern "C" DWORD WINAPI ManualMapShellcode(MmContext* context) {
     BYTE* base = context->image;
     auto nt = reinterpret_cast<IMAGE_NT_HEADERS64*>(base + reinterpret_cast<IMAGE_DOS_HEADER*>(base)->e_lfanew);
@@ -125,9 +109,19 @@ extern "C" DWORD WINAPI ManualMapShellcode(MmContext* context) {
                     name = reinterpret_cast<LPCSTR>(base + thunk + 2);
                 }
                 FARPROC function;
-                if (context->cxxThrowStub && !IMAGE_SNAP_BY_ORDINAL64(thunk) && isCxxThrowName(name)) {
+                if (context->cxxThrowStub && !IMAGE_SNAP_BY_ORDINAL64(thunk)
+                        && name[0] == '_' && name[1] == 'C' && name[2] == 'x' && name[3] == 'x'
+                        && name[4] == 'T' && name[5] == 'h' && name[6] == 'r' && name[7] == 'o'
+                        && name[8] == 'w' && name[9] == 'E' && name[10] == 'x' && name[11] == 'c'
+                        && name[12] == 'e' && name[13] == 'p' && name[14] == 't' && name[15] == 'i'
+                        && name[16] == 'o' && name[17] == 'n' && name[18] == '\0') {
                     function = reinterpret_cast<FARPROC>(context->cxxThrowStub);
-                } else if (context->rtlPcTrampoline && !IMAGE_SNAP_BY_ORDINAL64(thunk) && isRtlPcToFileHeaderName(name)) {
+                } else if (context->rtlPcTrampoline && !IMAGE_SNAP_BY_ORDINAL64(thunk)
+                        && name[0] == 'R' && name[1] == 't' && name[2] == 'l' && name[3] == 'P'
+                        && name[4] == 'c' && name[5] == 'T' && name[6] == 'o' && name[7] == 'F'
+                        && name[8] == 'i' && name[9] == 'l' && name[10] == 'e' && name[11] == 'H'
+                        && name[12] == 'e' && name[13] == 'a' && name[14] == 'd' && name[15] == 'e'
+                        && name[16] == 'r' && name[17] == '\0') {
                     function = reinterpret_cast<FARPROC>(context->rtlPcTrampoline);
                 } else {
                     function = context->getProcAddress(module, name);
