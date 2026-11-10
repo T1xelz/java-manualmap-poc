@@ -25,10 +25,31 @@ class MappingApiTest {
         assertInstanceOf(IllegalArgumentException.class, invalidPid.getCause());
         assertNull(invalidPid.nativeError());
         assertEquals(MappingException.Kind.VALIDATION,
-                assertThrows(MappingException.class, () -> mapper.map(1, null)).kind());
+                assertThrows(MappingException.class, () -> mapper.map(1, (Path) null)).kind());
         assertEquals(MappingException.Kind.VALIDATION,
                 assertThrows(MappingException.class,
                         () -> mapper.map(1, Path.of("missing.dll"), null)).kind());
+    }
+
+    @Test
+    void rejectsMissingOrEmptyBytes() {
+        ManualMapper mapper = new ManualMapper();
+        assertEquals(MappingException.Kind.VALIDATION,
+                assertThrows(MappingException.class, () -> mapper.map(1, (byte[]) null)).kind());
+        assertEquals(MappingException.Kind.VALIDATION,
+                assertThrows(MappingException.class, () -> mapper.mapResult(1, new byte[0])).kind());
+        assertEquals(MappingException.Kind.VALIDATION,
+                assertThrows(MappingException.class,
+                        () -> mapper.mapResult(1, new byte[]{1}, null)).kind());
+    }
+
+    @Test
+    @EnabledOnOs(OS.WINDOWS)
+    void rejectsMalformedBytesBeforeOpeningProcess() {
+        MappingException error = assertThrows(MappingException.class,
+                () -> new ManualMapper().mapResult(1, new byte[]{1, 2, 3}));
+        assertEquals(MappingException.Kind.VALIDATION, error.kind());
+        assertInstanceOf(IllegalArgumentException.class, error.getCause());
     }
 
     @Test

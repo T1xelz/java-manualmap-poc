@@ -33,6 +33,17 @@ class MappingIntegrationX86Test {
     }
 
     @Test
+    void mapsX86FixtureFromBytes() throws Exception {
+        byte[] dll = Files.readAllBytes(Path.of("build/native/fixture32.dll"));
+        PeImage pe = new PeImage(dll);
+        try (Host host = Host.launch()) {
+            long image = new ManualMapper().map(host.pid(), dll);
+            assertFixture(host, pe, image, MappingOptions.DLL_PROCESS_ATTACH, 0);
+            assertHostExit(host);
+        }
+    }
+
+    @Test
     void mapsRelocatedX86FixtureAndClearsSections() throws Exception {
         Path dll = Path.of("build/native/fixture32.dll").toAbsolutePath();
         PeImage pe = new PeImage(Files.readAllBytes(dll));

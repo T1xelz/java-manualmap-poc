@@ -13,6 +13,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.concurrent.TimeUnit;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -32,6 +33,19 @@ class MappingIntegrationTest {
         try (Host host = Host.launch()) {
             long image = new ManualMapper().map(host.pid(), dll);
             assertFixture(host, pe, image, MappingOptions.DLL_PROCESS_ATTACH, 0);
+            assertHostExit(host);
+        }
+    }
+
+    @Test
+    void mapsFixtureFromBytesWithoutChangingInput() throws Exception {
+        byte[] dll = Files.readAllBytes(Path.of("build/native/fixture_ehsc_md.dll"));
+        byte[] original = dll.clone();
+        PeImage pe = new PeImage(dll);
+        try (Host host = Host.launch()) {
+            MappingResult result = new ManualMapper().mapResult(host.pid(), dll, MappingOptions.defaults());
+            assertFixture(host, pe, result.address(), MappingOptions.DLL_PROCESS_ATTACH, 0);
+            assertArrayEquals(original, dll);
             assertHostExit(host);
         }
     }

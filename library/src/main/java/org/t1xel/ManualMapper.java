@@ -64,17 +64,47 @@ public final class ManualMapper {
         return mapResult(pid, dll, options).address();
     }
 
+    public long map(int pid, byte[] dll) throws MappingException {
+        return map(pid, dll, MappingOptions.defaults());
+    }
+
+    public long map(int pid, byte[] dll, MappingOptions options) throws MappingException {
+        return mapResult(pid, dll, options).address();
+    }
+
     public MappingResult mapResult(int pid, Path dll) throws MappingException {
         return mapResult(pid, dll, MappingOptions.defaults());
     }
 
-    /** Each invocation owns its diagnostics; callers may reuse this mapper concurrently. */
     public MappingResult mapResult(int pid, Path dll, MappingOptions options) throws MappingException {
+        return mapResult(pid, () -> {
+            PeImage.require(dll != null, "DLL path is required");
+            PeImage.require(Files.size(dll) <= 512L * 1024 * 1024, "DLL exceeds 512 MiB limit");
+            return Files.readAllBytes(dll);
+        }, options);
+    }
+
+    public MappingResult mapResult(int pid, byte[] dll) throws MappingException {
+        return mapResult(pid, dll, MappingOptions.defaults());
+    }
+
+    /**
+     * Maps raw DLL file bytes without writing a temporary file. The input is not modified.
+     * Do not modify the array while this call is running. Each call owns its diagnostics.
+     */
+    public MappingResult mapResult(int pid, byte[] dll, MappingOptions options) throws MappingException {
+        return mapResult(pid, () -> dll, options);
+    }
+
+    private MappingResult mapResult(int pid, DllSource source, MappingOptions options) throws MappingException {
         List<String> diagnostics = new ArrayList<>();
         try {
             PeImage.require(pid > 0, "PID must be positive");
-            PeImage.require(dll != null, "DLL path is required");
             PeImage.require(options != null, "Mapping options are required");
+            byte[] dll = source.read();
+            PeImage.require(dll != null, "DLL bytes are required");
+            PeImage.require(dll.length > 0, "DLL bytes must not be empty");
+            PeImage.require(dll.length <= 512L * 1024 * 1024, "DLL exceeds 512 MiB limit");
             long address = new ManualMapper(diagnostics).execute(pid, dll, options);
             return new MappingResult(address, diagnostics);
         } catch (MappingException exception) {
@@ -89,13 +119,17 @@ public final class ManualMapper {
         }
     }
 
-    private long execute(int pid, Path dll, MappingOptions options) throws IOException {
+    @FunctionalInterface
+    private interface DllSource {
+        byte[] read() throws IOException;
+    }
+
+    private long execute(int pid, byte[] dll, MappingOptions options) throws IOException {
         if (!Platform.isWindows() || Native.POINTER_SIZE != 8 || !Platform.isIntel()) {
             throw new MappingException(MappingException.Kind.UNSUPPORTED_PLATFORM,
                     "Use an AMD64 Windows JVM", null);
         }
-        PeImage.require(Files.size(dll) <= 512L * 1024 * 1024, "DLL exceeds 512 MiB limit");
-        PeImage pe = new PeImage(Files.readAllBytes(dll));
+        PeImage pe = new PeImage(dll);
         pe.validateDll();
         byte[] stub = resource(pe.is64() ? "/loader64.bin" : "/loader32.bin");
         WinApi api = WinApi.INSTANCE;
