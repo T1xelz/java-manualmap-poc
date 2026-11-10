@@ -4,7 +4,9 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
+import java.util.Objects;
 
 /** Bounded PE32/PE32+ reader shared by the mapper and native-code extractor. */
 public final class PeImage {
@@ -25,7 +27,83 @@ public final class PeImage {
         }
     }
 
-    public record Section(String name, int rva, int virtualSize, int rawOffset, int rawSize, int characteristics) {
+    public static final class Section {
+        private final String name;
+        private final int rva;
+        private final int virtualSize;
+        private final int rawOffset;
+        private final int rawSize;
+        private final int characteristics;
+
+        public Section(String name, int rva, int virtualSize, int rawOffset, int rawSize, int characteristics) {
+            this.name = name;
+            this.rva = rva;
+            this.virtualSize = virtualSize;
+            this.rawOffset = rawOffset;
+            this.rawSize = rawSize;
+            this.characteristics = characteristics;
+        }
+
+        public String name() {
+            return name;
+        }
+
+        public int rva() {
+            return rva;
+        }
+
+        public int virtualSize() {
+            return virtualSize;
+        }
+
+        public int rawOffset() {
+            return rawOffset;
+        }
+
+        public int rawSize() {
+            return rawSize;
+        }
+
+        public int characteristics() {
+            return characteristics;
+        }
+
+        @Override
+        public boolean equals(Object other) {
+            if (this == other) {
+                return true;
+            }
+            if (!(other instanceof Section)) {
+                return false;
+            }
+            Section that = (Section) other;
+            return Objects.equals(name, that.name)
+                    && rva == that.rva
+                    && virtualSize == that.virtualSize
+                    && rawOffset == that.rawOffset
+                    && rawSize == that.rawSize
+                    && characteristics == that.characteristics;
+        }
+
+        @Override
+        public int hashCode() {
+            int result = 0;
+            result = 31 * result + Objects.hashCode(name);
+            result = 31 * result + rva;
+            result = 31 * result + virtualSize;
+            result = 31 * result + rawOffset;
+            result = 31 * result + rawSize;
+            result = 31 * result + characteristics;
+            return result;
+        }
+
+        @Override
+        public String toString() {
+            return "Section[name=" + name + ", rva=" + rva + ", virtualSize=" + virtualSize
+                    + ", rawOffset=" + rawOffset + ", rawSize=" + rawSize
+                    + ", characteristics=" + characteristics + "]";
+        }
+
         public int mappedSize() {
             return Math.max(virtualSize, rawSize);
         }
@@ -53,11 +131,16 @@ public final class PeImage {
         range(nt, 24, file.length);
         require(i32(nt) == 0x4550, "Missing PE signature");
         machine = u16(nt + 4);
-        arch = switch (machine) {
-            case 0x8664 -> Arch.X64;
-            case 0x14C -> Arch.X86;
-            default -> throw new IllegalArgumentException("Unsupported PE machine 0x" + Integer.toHexString(machine));
-        };
+        switch (machine) {
+            case 0x8664:
+                arch = Arch.X64;
+                break;
+            case 0x14C:
+                arch = Arch.X86;
+                break;
+            default:
+                throw new IllegalArgumentException("Unsupported PE machine 0x" + Integer.toHexString(machine));
+        }
         int count = u16(nt + 6);
         require(count > 0 && count <= 96, "Invalid section count");
         int optionalSize = u16(nt + 20);
@@ -121,7 +204,7 @@ public final class PeImage {
     }
 
     public List<Section> sections() {
-        return List.copyOf(sections);
+        return Collections.unmodifiableList(new ArrayList<>(sections));
     }
 
     public int directoryRva(int index) {

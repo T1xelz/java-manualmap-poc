@@ -1,12 +1,14 @@
 package org.t1xel;
 
 import org.junit.jupiter.api.Test;
+import org.t1xel.internal.StreamUtils;
 import org.t1xel.tools.ShellcodeTool;
 
+import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.file.Files;
-import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.Arrays;
 import java.util.Random;
 
@@ -139,13 +141,14 @@ class PeImageTest {
     @Test
     void extractedX86JumpTargetsLinkedEntryPoint() throws Exception {
         byte[] code;
-        try (var input = PeImageTest.class.getResourceAsStream("/loader32.bin")) {
+        try (InputStream input = PeImageTest.class.getResourceAsStream("/loader32.bin")) {
             assertTrue(input != null);
-            code = input.readAllBytes();
+            code = StreamUtils.readAllBytes(input);
         }
-        PeImage linked = new PeImage(Files.readAllBytes(Path.of("build/native/loader32.exe")));
+        PeImage linked = new PeImage(Files.readAllBytes(Paths.get("build/native/loader32.exe")));
         assertEquals(PeImage.Arch.X86, linked.arch());
-        int text = linked.sections().stream().filter(section -> section.name().equals(".text")).findFirst().orElseThrow().rva();
+        int text = linked.sections().stream().filter(section -> section.name().equals(".text")).findFirst()
+                .orElseThrow(() -> new AssertionError("Missing .text section")).rva();
         assertEquals(0xE9, code[0] & 255);
         assertEquals(linked.entryRva - text, ByteBuffer.wrap(code).order(ByteOrder.LITTLE_ENDIAN).getInt(1));
     }
@@ -229,12 +232,13 @@ class PeImageTest {
     @Test
     void extractedJumpTargetsLinkedEntryPoint() throws Exception {
         byte[] code;
-        try (var input = PeImageTest.class.getResourceAsStream("/loader64.bin")) {
+        try (InputStream input = PeImageTest.class.getResourceAsStream("/loader64.bin")) {
             assertTrue(input != null);
-            code = input.readAllBytes();
+            code = StreamUtils.readAllBytes(input);
         }
-        PeImage linked = new PeImage(Files.readAllBytes(Path.of("build/native/loader64.exe")));
-        int text = linked.sections().stream().filter(section -> section.name().equals(".text")).findFirst().orElseThrow().rva();
+        PeImage linked = new PeImage(Files.readAllBytes(Paths.get("build/native/loader64.exe")));
+        int text = linked.sections().stream().filter(section -> section.name().equals(".text")).findFirst()
+                .orElseThrow(() -> new AssertionError("Missing .text section")).rva();
         assertEquals(0xE9, code[0] & 255);
         assertEquals(linked.entryRva - text, ByteBuffer.wrap(code).order(ByteOrder.LITTLE_ENDIAN).getInt(1));
     }

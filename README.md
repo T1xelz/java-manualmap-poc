@@ -1,12 +1,13 @@
 # ManualMap
 
-Java library and CLI for mapping Windows DLLs into AMD64 or x86 (WOW64) processes.
+Java 8 library and CLI for mapping Windows DLLs into AMD64 or x86 (WOW64) processes.
 Accepts a DLL path or raw DLL file bytes (`byte[]`).
 
 ## Build
 
-Requires Windows x64, an AMD64 JDK 21+, MSVC x86/x64 build tools and a Windows SDK.
-Gradle uses a JDK 21 toolchain. MSVC is discovered automatically; override it with
+Requires Windows x64, an AMD64 JDK 8, MSVC x86/x64 build tools and a Windows SDK.
+Gradle compiles and runs tests with a JDK 8 toolchain. MSVC is discovered
+automatically; override it with
 `MANUALMAP_VCVARS64` / `MANUALMAP_VCVARS32` if needed.
 
 ```powershell
@@ -53,8 +54,8 @@ public final class Example {
 }
 ```
 
-For a path, import `java.nio.file.Path` and call
-`mapper.mapResult(pid, Path.of("C:/samples/example.dll"))` instead.
+For a path, import `java.nio.file.Paths` and call
+`mapper.mapResult(pid, Paths.get("C:/samples/example.dll"))` instead.
 Both input types also accept `MappingOptions` as a third argument.
 Use `map(...)` if you only need the address, or `mapResult(...)` for the address
 and warnings. The byte-array overload does not write a temporary DLL or modify

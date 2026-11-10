@@ -3,7 +3,7 @@ plugins {
 }
 
 java {
-    toolchain.languageVersion.set(JavaLanguageVersion.of(21))
+    toolchain.languageVersion.set(JavaLanguageVersion.of(8))
 }
 
 dependencies {
@@ -16,7 +16,7 @@ application {
 }
 
 base {
-    archivesName.set("ManualMap")
+    archivesName.set("manualmap-cli")
 }
 
 distributions {

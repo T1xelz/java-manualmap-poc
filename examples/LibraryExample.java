@@ -6,6 +6,7 @@ import org.t1xel.MappingResult;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.Paths;
 
 public final class LibraryExample {
     private LibraryExample() {
@@ -19,7 +20,7 @@ public final class LibraryExample {
 
         try {
             int pid = Integer.parseInt(args[0]);
-            Path path = Path.of(args[1]);
+            Path path = Paths.get(args[1]);
             ManualMapper mapper = new ManualMapper();
             MappingOptions options = MappingOptions.defaults();
 

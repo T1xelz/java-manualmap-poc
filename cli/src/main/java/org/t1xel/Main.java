@@ -1,6 +1,6 @@
 package org.t1xel;
 
-import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.Locale;
 
 public final class Main {
@@ -20,17 +20,32 @@ public final class Main {
             MappingOptions.Builder options = MappingOptions.builder();
             for (int i = 2; i < args.length; i++) {
                 switch (args[i]) {
-                    case "--keep-header" -> options.clearHeader(false);
-                    case "--keep-sections" -> options.clearNonNeededSections(false);
-                    case "--no-protections" -> options.adjustProtections(false);
-                    case "--no-seh" -> options.sehSupport(false);
-                    case "--no-tls" -> options.tlsSupport(false);
-                    case "--reason" -> options.dllMainReason(reason(argument(args, ++i, "--reason")));
-                    case "--reserved" -> options.dllMainReserved(reserved(argument(args, ++i, "--reserved")));
-                    default -> throw new IllegalArgumentException("Unknown option: " + args[i]);
+                    case "--keep-header":
+                        options.clearHeader(false);
+                        break;
+                    case "--keep-sections":
+                        options.clearNonNeededSections(false);
+                        break;
+                    case "--no-protections":
+                        options.adjustProtections(false);
+                        break;
+                    case "--no-seh":
+                        options.sehSupport(false);
+                        break;
+                    case "--no-tls":
+                        options.tlsSupport(false);
+                        break;
+                    case "--reason":
+                        options.dllMainReason(reason(argument(args, ++i, "--reason")));
+                        break;
+                    case "--reserved":
+                        options.dllMainReserved(reserved(argument(args, ++i, "--reserved")));
+                        break;
+                    default:
+                        throw new IllegalArgumentException("Unknown option: " + args[i]);
                 }
             }
-            MappingResult result = new ManualMapper().mapResult(pid, Path.of(args[1]), options.build());
+            MappingResult result = new ManualMapper().mapResult(pid, Paths.get(args[1]), options.build());
             for (String warning : result.warnings()) {
                 System.err.println(warning);
             }
@@ -52,13 +67,20 @@ public final class Main {
     }
 
     private static int reason(String value) {
-        return switch (value.toLowerCase(Locale.ROOT)) {
-            case "detach", "process-detach" -> MappingOptions.DLL_PROCESS_DETACH;
-            case "attach", "process-attach" -> MappingOptions.DLL_PROCESS_ATTACH;
-            case "thread-attach" -> MappingOptions.DLL_THREAD_ATTACH;
-            case "thread-detach" -> MappingOptions.DLL_THREAD_DETACH;
-            default -> Integer.parseInt(value);
-        };
+        switch (value.toLowerCase(Locale.ROOT)) {
+            case "detach":
+            case "process-detach":
+                return MappingOptions.DLL_PROCESS_DETACH;
+            case "attach":
+            case "process-attach":
+                return MappingOptions.DLL_PROCESS_ATTACH;
+            case "thread-attach":
+                return MappingOptions.DLL_THREAD_ATTACH;
+            case "thread-detach":
+                return MappingOptions.DLL_THREAD_DETACH;
+            default:
+                return Integer.parseInt(value);
+        }
     }
 
     private static long reserved(String value) {
@@ -67,16 +89,15 @@ public final class Main {
     }
 
     private static void usage() {
-        System.err.println("""
-                Usage: ManualMap <process-id> <dll-path> [options]
-                  PE32+ (AMD64) DLL -> native AMD64 process
-                  PE32 (x86) DLL    -> WOW64 (x86) process
-                  --reason <0..3|attach|detach|thread-attach|thread-detach>
-                  --reserved <decimal|0xhex>
-                  --keep-header        retain PE headers
-                  --keep-sections      retain .rsrc/.reloc/.pdata
-                  --no-protections     leave the image RWX
-                  --no-seh             skip unwind-table registration and EH stubs (x64 only)
-                  --no-tls             skip static TLS provisioning (x64 only)""");
+        System.err.println("Usage: ManualMap <process-id> <dll-path> [options]\n"
+                + "  PE32+ (AMD64) DLL -> native AMD64 process\n"
+                + "  PE32 (x86) DLL    -> WOW64 (x86) process\n"
+                + "  --reason <0..3|attach|detach|thread-attach|thread-detach>\n"
+                + "  --reserved <decimal|0xhex>\n"
+                + "  --keep-header        retain PE headers\n"
+                + "  --keep-sections      retain .rsrc/.reloc/.pdata\n"
+                + "  --no-protections     leave the image RWX\n"
+                + "  --no-seh             skip unwind-table registration and EH stubs (x64 only)\n"
+                + "  --no-tls             skip static TLS provisioning (x64 only)");
     }
 }

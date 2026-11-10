@@ -1,6 +1,7 @@
 package org.t1xel.tools;
 
 import org.t1xel.PeImage;
+import org.t1xel.internal.StreamUtils;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -8,8 +9,8 @@ import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.Arrays;
-import java.util.List;
 
 /** MSVC driver and PE .text-to-binary/Java-bytes converter, without native helper tools. */
 public final class ShellcodeTool {
@@ -18,7 +19,7 @@ public final class ShellcodeTool {
 
     public static void main(String[] args) throws Exception {
         if (args.length == 2 && (args[0].equals("build") || args[0].equals("fixtures"))) {
-            Path root = Path.of(args[1]).toAbsolutePath();
+            Path root = Paths.get(args[1]).toAbsolutePath();
             Path output = root.resolve("build/native");
             Files.createDirectories(output);
             if (args[0].equals("build")) {
@@ -35,9 +36,36 @@ public final class ShellcodeTool {
             } else {
                 // Same source across every EH/CRT combination the reference
                 // test matrix covers (x64 only).
-                record Fixture(String name, String eh, String crt, String define) {
+                final class Fixture {
+                    private final String name;
+                    private final String eh;
+                    private final String crt;
+                    private final String define;
+
+                    private Fixture(String name, String eh, String crt, String define) {
+                        this.name = name;
+                        this.eh = eh;
+                        this.crt = crt;
+                        this.define = define;
+                    }
+
+                    public String name() {
+                        return name;
+                    }
+
+                    public String eh() {
+                        return eh;
+                    }
+
+                    public String crt() {
+                        return crt;
+                    }
+
+                    public String define() {
+                        return define;
+                    }
                 }
-                for (Fixture fixture : List.of(
+                for (Fixture fixture : Arrays.asList(
                         new Fixture("ehsc_md", "/EHsc", "/MD", "EH_MODE_EHSC"),
                         new Fixture("eha_md", "/EHa", "/MD", "EH_MODE_EHA"),
                         new Fixture("ehsc_mt", "/EHsc", "/MT", "EH_MODE_EHSC"),
@@ -58,9 +86,9 @@ public final class ShellcodeTool {
                         "/GS- /O1 /Zl", "HostMain", null, "/SUBSYSTEM:CONSOLE /NODEFAULTLIB kernel32.lib");
             }
         } else if (args.length == 3 && args[0].equals("extract")) {
-            extract(Path.of(args[1]), Path.of(args[2]));
+            extract(Paths.get(args[1]), Paths.get(args[2]));
         } else if (args.length == 2 && args[0].equals("bytes")) {
-            System.out.print(javaBytes(Files.readAllBytes(Path.of(args[1]))));
+            System.out.print(javaBytes(Files.readAllBytes(Paths.get(args[1]))));
         } else {
             throw new IllegalArgumentException("ShellcodeTool build|fixtures <root> | extract <linked-pe> <output.bin> | bytes <input.bin>");
         }
@@ -88,7 +116,7 @@ public final class ShellcodeTool {
         System.arraycopy(sectionBytes, 0, code, 5, sectionBytes.length);
         Files.createDirectories(output.toAbsolutePath().getParent());
         Files.write(output, code);
-        Files.writeString(output.resolveSibling(output.getFileName() + ".java.txt"), javaBytes(code));
+        Files.write(output.resolveSibling(output.getFileName() + ".java.txt"), javaBytes(code).getBytes(StandardCharsets.UTF_8));
         System.out.println("Extracted " + code.length + " bytes to " + output);
         return code;
     }
@@ -138,27 +166,27 @@ public final class ShellcodeTool {
     private static boolean run(String command, StringBuilder log) throws IOException, InterruptedException {
         Process process = new ProcessBuilder("cmd.exe", "/d", "/s", "/c", command)
                 .redirectErrorStream(true).start();
-        log.append(new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8));
+        log.append(new String(StreamUtils.readAllBytes(process.getInputStream()), StandardCharsets.UTF_8));
         return process.waitFor() == 0;
     }
 
     private static Path findVcvars(PeImage.Arch arch) throws IOException, InterruptedException {
         boolean x64 = arch == PeImage.Arch.X64;
         String override = System.getenv(x64 ? "MANUALMAP_VCVARS64" : "MANUALMAP_VCVARS32");
-        if (override != null && Files.isRegularFile(Path.of(override))) {
-            return Path.of(override);
+        if (override != null && Files.isRegularFile(Paths.get(override))) {
+            return Paths.get(override);
         }
         String programFiles = System.getenv("ProgramFiles(x86)");
         PeImage.require(programFiles != null, "Native build requires Windows and MSVC build tools");
-        Path vswhere = Path.of(programFiles, "Microsoft Visual Studio", "Installer", "vswhere.exe");
-        Process process = new ProcessBuilder(List.of(vswhere.toString(), "-latest", "-products", "*", "-requires",
+        Path vswhere = Paths.get(programFiles, "Microsoft Visual Studio", "Installer", "vswhere.exe");
+        Process process = new ProcessBuilder(Arrays.asList(vswhere.toString(), "-latest", "-products", "*", "-requires",
                 "Microsoft.VisualStudio.Component.VC.Tools.x86.x64", "-property", "installationPath"))
                 .redirectError(ProcessBuilder.Redirect.INHERIT).start();
-        String installation = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8).strip();
+        String installation = new String(StreamUtils.readAllBytes(process.getInputStream()), StandardCharsets.UTF_8).trim();
         if (process.waitFor() != 0 || installation.isEmpty()) {
             throw new IOException("Install MSVC x86/x64 tools and a Windows SDK, or set MANUALMAP_VCVARS64/MANUALMAP_VCVARS32");
         }
-        return Path.of(installation, "VC", "Auxiliary", "Build", x64 ? "vcvars64.bat" : "vcvars32.bat");
+        return Paths.get(installation, "VC", "Auxiliary", "Build", x64 ? "vcvars64.bat" : "vcvars32.bat");
     }
 
     private static String quote(String value) {

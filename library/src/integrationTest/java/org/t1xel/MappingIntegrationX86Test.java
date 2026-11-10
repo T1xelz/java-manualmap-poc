@@ -9,7 +9,7 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.concurrent.TimeUnit;
+import java.nio.file.Paths;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
@@ -23,9 +23,9 @@ class MappingIntegrationX86Test {
 
     @Test
     void mapsX86FixtureWithImportsAndRelocations() throws Exception {
-        Path dll = Path.of("build/native/fixture32.dll").toAbsolutePath();
+        Path dll = Paths.get("build/native/fixture32.dll").toAbsolutePath();
         PeImage pe = new PeImage(Files.readAllBytes(dll));
-        try (Host host = Host.launch()) {
+        try (NativeTestHost host = NativeTestHost.launch("build/native/host32.exe")) {
             long image = new ManualMapper().map(host.pid(), dll);
             assertFixture(host, pe, image, MappingOptions.DLL_PROCESS_ATTACH, 0);
             assertHostExit(host);
@@ -34,9 +34,9 @@ class MappingIntegrationX86Test {
 
     @Test
     void mapsX86FixtureFromBytes() throws Exception {
-        byte[] dll = Files.readAllBytes(Path.of("build/native/fixture32.dll"));
+        byte[] dll = Files.readAllBytes(Paths.get("build/native/fixture32.dll"));
         PeImage pe = new PeImage(dll);
-        try (Host host = Host.launch()) {
+        try (NativeTestHost host = NativeTestHost.launch("build/native/host32.exe")) {
             long image = new ManualMapper().map(host.pid(), dll);
             assertFixture(host, pe, image, MappingOptions.DLL_PROCESS_ATTACH, 0);
             assertHostExit(host);
@@ -45,9 +45,9 @@ class MappingIntegrationX86Test {
 
     @Test
     void mapsRelocatedX86FixtureAndClearsSections() throws Exception {
-        Path dll = Path.of("build/native/fixture32.dll").toAbsolutePath();
+        Path dll = Paths.get("build/native/fixture32.dll").toAbsolutePath();
         PeImage pe = new PeImage(Files.readAllBytes(dll));
-        try (Host host = Host.launch()) {
+        try (NativeTestHost host = NativeTestHost.launch("build/native/host32.exe")) {
             Pointer reserved = WinApi.INSTANCE.VirtualAllocEx(host.process, Pointer.createConstant(pe.preferredBase),
                     pe.imageSize, 0x3000, 4);
             assertNotNull(reserved, "Reserve preferred base to exercise HIGHLOW relocations");
@@ -63,9 +63,9 @@ class MappingIntegrationX86Test {
 
     @Test
     void honoursConfiguredDllMainParameters() throws Exception {
-        Path dll = Path.of("build/native/fixture32.dll").toAbsolutePath();
+        Path dll = Paths.get("build/native/fixture32.dll").toAbsolutePath();
         PeImage pe = new PeImage(Files.readAllBytes(dll));
-        try (Host host = Host.launch()) {
+        try (NativeTestHost host = NativeTestHost.launch("build/native/host32.exe")) {
             MappingOptions options = MappingOptions.builder()
                     .dllMainReason(MappingOptions.DLL_THREAD_ATTACH)
                     .dllMainReserved(0x1234)
@@ -85,8 +85,8 @@ class MappingIntegrationX86Test {
 
     @Test
     void rejectsX86ImageForNativeAmd64Target() throws Exception {
-        Path dll = Path.of("build/native/fixture32.dll").toAbsolutePath();
-        try (Host host = Host.launch("build/native/host.exe")) {
+        Path dll = Paths.get("build/native/fixture32.dll").toAbsolutePath();
+        try (NativeTestHost host = NativeTestHost.launch("build/native/host.exe")) {
             MappingException error = assertThrows(MappingException.class,
                     () -> new ManualMapper().map(host.pid(), dll));
             assertTrue(error.getMessage().contains("WOW64"), error.getMessage());
@@ -95,15 +95,15 @@ class MappingIntegrationX86Test {
 
     @Test
     void rejectsAmd64ImageForWow64Target() throws Exception {
-        Path dll = Path.of("build/native/fixture_ehsc_md.dll").toAbsolutePath();
-        try (Host host = Host.launch()) {
+        Path dll = Paths.get("build/native/fixture_ehsc_md.dll").toAbsolutePath();
+        try (NativeTestHost host = NativeTestHost.launch("build/native/host32.exe")) {
             MappingException error = assertThrows(MappingException.class,
                     () -> new ManualMapper().map(host.pid(), dll));
             assertTrue(error.getMessage().contains("AMD64"), error.getMessage());
         }
     }
 
-    private static void assertFixture(Host host, PeImage pe, long image, int reason, int reserved) {
+    private static void assertFixture(NativeTestHost host, PeImage pe, long image, int reason, int reserved) {
         int attachedRva = exportedRva(pe, "MmAttached");
         assertEquals(host.pid(), littleInt(read(host.process, image + attachedRva, 4), 0));
         int pointerRva = exportedRva(pe, "MmAttachedPointer");
@@ -127,11 +127,67 @@ class MappingIntegrationX86Test {
                 b.getInt(), b.getInt());
     }
 
-    private record Results(int magic, int pass, int fail, int reason, int reserved, int relocOk, int importOk,
-            int moduleOk, int failMask) {
+    private static final class Results {
+        private final int magic;
+        private final int pass;
+        private final int fail;
+        private final int reason;
+        private final int reserved;
+        private final int relocOk;
+        private final int importOk;
+        private final int moduleOk;
+        private final int failMask;
+
+        private Results(int magic, int pass, int fail, int reason, int reserved, int relocOk, int importOk, int moduleOk, int failMask) {
+            this.magic = magic;
+            this.pass = pass;
+            this.fail = fail;
+            this.reason = reason;
+            this.reserved = reserved;
+            this.relocOk = relocOk;
+            this.importOk = importOk;
+            this.moduleOk = moduleOk;
+            this.failMask = failMask;
+        }
+
+        public int magic() {
+            return magic;
+        }
+
+        public int pass() {
+            return pass;
+        }
+
+        public int fail() {
+            return fail;
+        }
+
+        public int reason() {
+            return reason;
+        }
+
+        public int reserved() {
+            return reserved;
+        }
+
+        public int relocOk() {
+            return relocOk;
+        }
+
+        public int importOk() {
+            return importOk;
+        }
+
+        public int moduleOk() {
+            return moduleOk;
+        }
+
+        public int failMask() {
+            return failMask;
+        }
     }
 
-    private static void assertSectionCleared(Host host, PeImage pe, long image, String name) {
+    private static void assertSectionCleared(NativeTestHost host, PeImage pe, long image, String name) {
         pe.sections().stream().filter(section -> section.name().equals(name)).findFirst().ifPresent(section -> {
             byte[] bytes = read(host.process, image + section.rva(), Math.min(4, section.mappedSize()));
             for (byte value : bytes) {
@@ -140,9 +196,8 @@ class MappingIntegrationX86Test {
         });
     }
 
-    private static void assertHostExit(Host host) throws Exception {
-        assertTrue(host.host.waitFor(10, TimeUnit.SECONDS), "Fixture host should observe its named event");
-        assertEquals(0, host.host.exitValue());
+    private static void assertHostExit(NativeTestHost host) throws Exception {
+        host.assertSuccessfulExit();
     }
 
     private static byte[] read(Pointer process, long address, int size) {
@@ -177,41 +232,4 @@ class MappingIntegrationX86Test {
         throw new AssertionError("Missing fixture export " + name);
     }
 
-    private static final class Host implements AutoCloseable {
-        private final Process host;
-        private final Pointer process;
-
-        private Host(Process host, Pointer process) {
-            this.host = host;
-            this.process = process;
-        }
-
-        static Host launch() throws Exception {
-            return launch("build/native/host32.exe");
-        }
-
-        static Host launch(String executable) throws Exception {
-            Process host = new ProcessBuilder(Path.of(executable).toAbsolutePath().toString()).start();
-            Thread.sleep(200);
-            assertTrue(host.isAlive());
-            Pointer process = WinApi.INSTANCE.OpenProcess(0x043A, false, (int) host.pid());
-            assertNotNull(process);
-            return new Host(host, process);
-        }
-
-        int pid() {
-            return (int) host.pid();
-        }
-
-        @Override
-        public void close() {
-            WinApi.INSTANCE.CloseHandle(process);
-            host.destroyForcibly();
-            try {
-                host.waitFor(5, TimeUnit.SECONDS);
-            } catch (InterruptedException interrupted) {
-                Thread.currentThread().interrupt();
-            }
-        }
-    }
 }

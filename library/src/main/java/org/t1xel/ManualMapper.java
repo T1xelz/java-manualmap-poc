@@ -8,6 +8,7 @@ import com.sun.jna.Pointer;
 import com.sun.jna.ptr.IntByReference;
 import com.sun.jna.ptr.PointerByReference;
 import com.sun.jna.ptr.ShortByReference;
+import org.t1xel.internal.StreamUtils;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -16,7 +17,9 @@ import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
@@ -49,7 +52,7 @@ public final class ManualMapper {
     private final List<String> warnings;
 
     public ManualMapper() {
-        this(List.of());
+        this(Collections.emptyList());
     }
 
     private ManualMapper(List<String> warnings) {
@@ -158,7 +161,7 @@ public final class ManualMapper {
             if (resource == null) {
                 throw new IOException("Missing " + name + "; build with gradlew build first");
             }
-            return resource.readAllBytes();
+            return StreamUtils.readAllBytes(resource);
         }
     }
 
@@ -525,7 +528,14 @@ public final class ManualMapper {
         }
     }
 
-    private record SectionBytes(int rva, byte[] bytes) {
+    private static final class SectionBytes {
+        private final int rva;
+        private final byte[] bytes;
+
+        private SectionBytes(int rva, byte[] bytes) {
+            this.rva = rva;
+            this.bytes = bytes;
+        }
     }
 
     private static SectionBytes readSection(Pointer process, long moduleBase, String name) {
@@ -572,7 +582,9 @@ public final class ManualMapper {
     private static void finalizeProtections(Pointer process, Pointer image, PeImage pe) {
         protect(process, image, pe.headerSize, PAGE_READONLY);
         int cursor = (pe.headerSize + 4095) & ~4095;
-        for (PeImage.Section section : pe.sections().stream().sorted(Comparator.comparingInt(PeImage.Section::rva)).toList()) {
+        List<PeImage.Section> sections = new ArrayList<>(pe.sections());
+        sections.sort(Comparator.comparingInt(PeImage.Section::rva));
+        for (PeImage.Section section : sections) {
             if (section.mappedSize() == 0) {
                 continue;
             }
@@ -619,7 +631,7 @@ public final class ManualMapper {
         char[] path = new char[32768];
         int length = WinApi.INSTANCE.GetModuleFileNameW(owner.getValue(), path, path.length);
         check(length > 0 && length < path.length, "GetModuleFileNameW");
-        String module = Path.of(new String(path, 0, length)).getFileName().toString().toLowerCase(Locale.ROOT);
+        String module = Paths.get(new String(path, 0, length)).getFileName().toString().toLowerCase(Locale.ROOT);
         Long base = modules.get(module);
         PeImage.require(base != null, "Target is missing API owner " + module);
         // Resolve forwarded exports locally, then translate the actual owning module's RVA.
@@ -662,7 +674,27 @@ public final class ManualMapper {
         return base + rva;
     }
 
-    private record RemotePe(long base, int imageSize, int exportRva, int exportSize) {
+    private static final class RemotePe {
+        private final long base;
+        private final int imageSize;
+        private final int exportRva;
+        private final int exportSize;
+
+        private RemotePe(long base, int imageSize, int exportRva, int exportSize) {
+            this.base = base;
+            this.imageSize = imageSize;
+            this.exportRva = exportRva;
+            this.exportSize = exportSize;
+        }
+
+        public int exportRva() {
+            return exportRva;
+        }
+
+        public int exportSize() {
+            return exportSize;
+        }
+
         static RemotePe read(Pointer process, long base) {
             byte[] header = ManualMapper.read(process, Pointer.createConstant(base), PAGE_SIZE);
             ByteBuffer b = ByteBuffer.wrap(header).order(ByteOrder.LITTLE_ENDIAN);

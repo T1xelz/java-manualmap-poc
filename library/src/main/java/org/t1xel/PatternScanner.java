@@ -1,6 +1,7 @@
 package org.t1xel;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 
 /**
@@ -13,13 +14,43 @@ final class PatternScanner {
     private PatternScanner() {
     }
 
-    private sealed interface Token permits ByteToken, RangeToken {
+    private interface Token {
     }
 
-    private record ByteToken(int value, boolean wildcard) implements Token {
+    private static final class ByteToken implements Token {
+        private final int value;
+        private final boolean wildcard;
+
+        private ByteToken(int value, boolean wildcard) {
+            this.value = value;
+            this.wildcard = wildcard;
+        }
+
+        public int value() {
+            return value;
+        }
+
+        public boolean wildcard() {
+            return wildcard;
+        }
     }
 
-    private record RangeToken(int min, int max) implements Token {
+    private static final class RangeToken implements Token {
+        private final int min;
+        private final int max;
+
+        private RangeToken(int min, int max) {
+            this.min = min;
+            this.max = max;
+        }
+
+        public int min() {
+            return min;
+        }
+
+        public int max() {
+            return max;
+        }
     }
 
     static List<Token> compile(String pattern) {
@@ -64,7 +95,7 @@ final class PatternScanner {
         if (tokens.isEmpty()) {
             throw new IllegalArgumentException("Empty pattern");
         }
-        return List.copyOf(tokens);
+        return Collections.unmodifiableList(new ArrayList<>(tokens));
     }
 
     static int scan(byte[] data, int offset, int length, String pattern, int skip) {
@@ -101,7 +132,8 @@ final class PatternScanner {
     private static boolean matchAt(byte[] data, int offset, int length, List<Token> tokens, int token) {
         while (token < tokens.size()) {
             Token current = tokens.get(token);
-            if (current instanceof RangeToken range) {
+            if (current instanceof RangeToken) {
+                RangeToken range = (RangeToken) current;
                 for (int skip = range.min(); skip <= range.max(); skip++) {
                     if (skip > length) {
                         break;
@@ -129,7 +161,7 @@ final class PatternScanner {
     private static int minimumLength(List<Token> tokens) {
         int minimum = 0;
         for (Token token : tokens) {
-            minimum += token instanceof RangeToken range ? range.min() : 1;
+            minimum += token instanceof RangeToken ? ((RangeToken) token).min() : 1;
         }
         return minimum;
     }

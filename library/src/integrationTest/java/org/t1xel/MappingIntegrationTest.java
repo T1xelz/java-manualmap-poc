@@ -11,7 +11,7 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.concurrent.TimeUnit;
+import java.nio.file.Paths;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -28,9 +28,9 @@ class MappingIntegrationTest {
     @ParameterizedTest
     @ValueSource(strings = {"ehsc_md", "eha_md", "ehsc_mt", "eha_mt", "ehac_mt"})
     void mapsFixtureWithTlsAndExceptions(String mode) throws Exception {
-        Path dll = Path.of("build/native/fixture_" + mode + ".dll").toAbsolutePath();
+        Path dll = Paths.get("build/native/fixture_" + mode + ".dll").toAbsolutePath();
         PeImage pe = new PeImage(Files.readAllBytes(dll));
-        try (Host host = Host.launch()) {
+        try (NativeTestHost host = NativeTestHost.launch("build/native/host.exe")) {
             long image = new ManualMapper().map(host.pid(), dll);
             assertFixture(host, pe, image, MappingOptions.DLL_PROCESS_ATTACH, 0);
             assertHostExit(host);
@@ -39,10 +39,10 @@ class MappingIntegrationTest {
 
     @Test
     void mapsFixtureFromBytesWithoutChangingInput() throws Exception {
-        byte[] dll = Files.readAllBytes(Path.of("build/native/fixture_ehsc_md.dll"));
+        byte[] dll = Files.readAllBytes(Paths.get("build/native/fixture_ehsc_md.dll"));
         byte[] original = dll.clone();
         PeImage pe = new PeImage(dll);
-        try (Host host = Host.launch()) {
+        try (NativeTestHost host = NativeTestHost.launch("build/native/host.exe")) {
             MappingResult result = new ManualMapper().mapResult(host.pid(), dll, MappingOptions.defaults());
             assertFixture(host, pe, result.address(), MappingOptions.DLL_PROCESS_ATTACH, 0);
             assertArrayEquals(original, dll);
@@ -52,9 +52,9 @@ class MappingIntegrationTest {
 
     @Test
     void mapsRelocatedMdFixtureAndClearsSections() throws Exception {
-        Path dll = Path.of("build/native/fixture_ehsc_md.dll").toAbsolutePath();
+        Path dll = Paths.get("build/native/fixture_ehsc_md.dll").toAbsolutePath();
         PeImage pe = new PeImage(Files.readAllBytes(dll));
-        try (Host host = Host.launch()) {
+        try (NativeTestHost host = NativeTestHost.launch("build/native/host.exe")) {
             Pointer reserved = WinApi.INSTANCE.VirtualAllocEx(host.process, Pointer.createConstant(pe.preferredBase),
                     pe.imageSize, 0x3000, 4);
             assertNotNull(reserved, "Reserve preferred base to exercise DIR64 relocations");
@@ -70,9 +70,9 @@ class MappingIntegrationTest {
 
     @Test
     void honoursConfiguredDllMainParametersAndMappingFlags() throws Exception {
-        Path dll = Path.of("build/native/fixture_ehsc_md.dll").toAbsolutePath();
+        Path dll = Paths.get("build/native/fixture_ehsc_md.dll").toAbsolutePath();
         PeImage pe = new PeImage(Files.readAllBytes(dll));
-        try (Host host = Host.launch()) {
+        try (NativeTestHost host = NativeTestHost.launch("build/native/host.exe")) {
             MappingOptions options = MappingOptions.builder()
                     .dllMainReason(MappingOptions.DLL_THREAD_ATTACH)
                     .dllMainReserved(0x1234)
@@ -90,7 +90,7 @@ class MappingIntegrationTest {
         }
     }
 
-    private static void assertFixture(Host host, PeImage pe, long image, int reason, int reserved) {
+    private static void assertFixture(NativeTestHost host, PeImage pe, long image, int reason, int reserved) {
         int stateRva = exportedRva(pe, "MmAttached");
         byte[] bytes = read(host.process, image + stateRva, 4);
         assertEquals(host.pid(), ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).getInt());
@@ -116,11 +116,86 @@ class MappingIntegrationTest {
                 b.getInt(), b.getInt(), b.getInt(), b.getInt(), b.getInt());
     }
 
-    private record MmResults(int magic, int pass, int fail, int reason, int reserved, int tlsCallbacks, int tlsMain,
-            int tlsMainAfter, int tlsWorker, int tlsIsolated, int threadAttach, int failMask) {
+    private static final class MmResults {
+        private final int magic;
+        private final int pass;
+        private final int fail;
+        private final int reason;
+        private final int reserved;
+        private final int tlsCallbacks;
+        private final int tlsMain;
+        private final int tlsMainAfter;
+        private final int tlsWorker;
+        private final int tlsIsolated;
+        private final int threadAttach;
+        private final int failMask;
+
+        private MmResults(int magic, int pass, int fail, int reason, int reserved, int tlsCallbacks, int tlsMain,
+                int tlsMainAfter, int tlsWorker, int tlsIsolated, int threadAttach, int failMask) {
+            this.magic = magic;
+            this.pass = pass;
+            this.fail = fail;
+            this.reason = reason;
+            this.reserved = reserved;
+            this.tlsCallbacks = tlsCallbacks;
+            this.tlsMain = tlsMain;
+            this.tlsMainAfter = tlsMainAfter;
+            this.tlsWorker = tlsWorker;
+            this.tlsIsolated = tlsIsolated;
+            this.threadAttach = threadAttach;
+            this.failMask = failMask;
+        }
+
+        public int magic() {
+            return magic;
+        }
+
+        public int pass() {
+            return pass;
+        }
+
+        public int fail() {
+            return fail;
+        }
+
+        public int reason() {
+            return reason;
+        }
+
+        public int reserved() {
+            return reserved;
+        }
+
+        public int tlsCallbacks() {
+            return tlsCallbacks;
+        }
+
+        public int tlsMain() {
+            return tlsMain;
+        }
+
+        public int tlsMainAfter() {
+            return tlsMainAfter;
+        }
+
+        public int tlsWorker() {
+            return tlsWorker;
+        }
+
+        public int tlsIsolated() {
+            return tlsIsolated;
+        }
+
+        public int threadAttach() {
+            return threadAttach;
+        }
+
+        public int failMask() {
+            return failMask;
+        }
     }
 
-    private static void assertSectionCleared(Host host, PeImage pe, long image, String name) {
+    private static void assertSectionCleared(NativeTestHost host, PeImage pe, long image, String name) {
         pe.sections().stream().filter(section -> section.name().equals(name)).findFirst().ifPresent(section -> {
             byte[] bytes = read(host.process, image + section.rva(), Math.min(4, section.mappedSize()));
             for (byte value : bytes) {
@@ -129,9 +204,8 @@ class MappingIntegrationTest {
         });
     }
 
-    private static void assertHostExit(Host host) throws Exception {
-        assertTrue(host.host.waitFor(10, TimeUnit.SECONDS), "Fixture host should observe its named event");
-        assertEquals(0, host.host.exitValue());
+    private static void assertHostExit(NativeTestHost host) throws Exception {
+        host.assertSuccessfulExit();
     }
 
     private static byte[] read(Pointer process, long address, int size) {
@@ -161,37 +235,4 @@ class MappingIntegrationTest {
         throw new AssertionError("Missing fixture export " + name);
     }
 
-    private static final class Host implements AutoCloseable {
-        private final Process host;
-        private final Pointer process;
-
-        private Host(Process host, Pointer process) {
-            this.host = host;
-            this.process = process;
-        }
-
-        static Host launch() throws Exception {
-            Process host = new ProcessBuilder(Path.of("build/native/host.exe").toAbsolutePath().toString()).start();
-            Thread.sleep(200);
-            assertTrue(host.isAlive());
-            Pointer process = WinApi.INSTANCE.OpenProcess(0x043A, false, (int) host.pid());
-            assertNotNull(process);
-            return new Host(host, process);
-        }
-
-        int pid() {
-            return (int) host.pid();
-        }
-
-        @Override
-        public void close() {
-            WinApi.INSTANCE.CloseHandle(process);
-            host.destroyForcibly();
-            try {
-                host.waitFor(5, TimeUnit.SECONDS);
-            } catch (InterruptedException interrupted) {
-                Thread.currentThread().interrupt();
-            }
-        }
-    }
 }
